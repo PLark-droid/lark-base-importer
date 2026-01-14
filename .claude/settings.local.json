@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build:*)",
+      "Bash(npm run dev:*)",
+      "Bash(timeout:*)",
+      "Bash(dir /s /b \"C:\\\\Users\\\\hirok\\\\AppData\\\\Local\\\\npm\")",
+      "Bash(findstr:*)",
+      "Bash(where:*)",
+      "Bash(dir \"C:\\\\Users\\\\hirok\\\\AppData\\\\Roaming\\\\npm\")",
+      "Bash(dir:*)",
+      "Bash(npm info miyabi-mcp-bundle)",
+      "Bash(claude /plugin marketplace add:*)",
+      "Bash(cat:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

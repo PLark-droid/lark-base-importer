@@ -1,0 +1,287 @@
+'use client';
+
+import { useState, useCallback } from 'react';
+import JsonUploader from '@/components/JsonUploader';
+import FieldPreview from '@/components/FieldPreview';
+import { parseLarkBaseUrl, LarkBaseUrlInfo } from '@/lib/lark';
+
+type Step = 'upload' | 'preview' | 'success';
+
+interface ImportResult {
+  tableId: string;
+  recordId: string;
+  fieldsCount: number;
+}
+
+export default function Home() {
+  const [step, setStep] = useState<Step>('upload');
+  const [jsonData, setJsonData] = useState<Record<string, unknown> | null>(null);
+  const [sourceName, setSourceName] = useState('');
+  const [larkUrl, setLarkUrl] = useState('');
+  const [urlInfo, setUrlInfo] = useState<LarkBaseUrlInfo | null>(null);
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<ImportResult | null>(null);
+
+  const handleUrlChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const url = e.target.value;
+    setLarkUrl(url);
+    setUrlError(null);
+
+    if (!url.trim()) {
+      setUrlInfo(null);
+      return;
+    }
+
+    const parsed = parseLarkBaseUrl(url);
+    if (parsed) {
+      setUrlInfo(parsed);
+    } else {
+      setUrlInfo(null);
+      setUrlError('有効なLark Base URLを入力してください');
+    }
+  }, []);
+
+  const handleJsonParsed = (data: Record<string, unknown>, name: string) => {
+    setJsonData(data);
+    setSourceName(name);
+    setStep('preview');
+  };
+
+  const handleCancel = () => {
+    setStep('upload');
+    setJsonData(null);
+    setSourceName('');
+    setError(null);
+  };
+
+  const handleImport = async () => {
+    if (!jsonData || !urlInfo) {
+      setError('JSONデータとLark Base URLが必要です');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/import', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonData,
+          appToken: urlInfo.appToken,
+          tableId: urlInfo.tableId,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'インポートに失敗しました');
+      }
+
+      setResult(data.data);
+      setStep('success');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'エラーが発生しました');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleReset = () => {
+    setStep('upload');
+    setJsonData(null);
+    setSourceName('');
+    setLarkUrl('');
+    setUrlInfo(null);
+    setUrlError(null);
+    setError(null);
+    setResult(null);
+  };
+
+  const canProceed = jsonData && urlInfo;
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
+      {/* Header */}
+      <header className="bg-white border-b border-gray-200">
+        <div className="max-w-4xl mx-auto px-6 py-4">
+          <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+            JSON → Lark Base Importer
+          </h1>
+          <p className="text-sm text-gray-500 mt-1">
+            JSONデータを既存のLark Baseテーブルにインポート
+          </p>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="max-w-4xl mx-auto px-6 py-8">
+        {/* Progress Steps */}
+        <div className="flex items-center justify-center mb-8">
+          <div className="flex items-center gap-2">
+            <div
+              className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+                step === 'upload'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-green-500 text-white'
+              }`}
+            >
+              {step === 'upload' ? '1' : '✓'}
+            </div>
+            <span className="text-sm text-gray-600">入力</span>
+          </div>
+          <div className="w-12 h-0.5 bg-gray-300 mx-2" />
+          <div className="flex items-center gap-2">
+            <div
+              className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+                step === 'preview'
+                  ? 'bg-blue-600 text-white'
+                  : step === 'success'
+                  ? 'bg-green-500 text-white'
+                  : 'bg-gray-300 text-gray-500'
+              }`}
+            >
+              {step === 'success' ? '✓' : '2'}
+            </div>
+            <span className="text-sm text-gray-600">確認</span>
+          </div>
+          <div className="w-12 h-0.5 bg-gray-300 mx-2" />
+          <div className="flex items-center gap-2">
+            <div
+              className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+                step === 'success'
+                  ? 'bg-green-500 text-white'
+                  : 'bg-gray-300 text-gray-500'
+              }`}
+            >
+              {step === 'success' ? '✓' : '3'}
+            </div>
+            <span className="text-sm text-gray-600">完了</span>
+          </div>
+        </div>
+
+        {/* Content Area */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
+          {step === 'upload' && (
+            <div className="space-y-6">
+              {/* Lark Base URL Input */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Lark Base URL
+                </label>
+                <input
+                  type="text"
+                  value={larkUrl}
+                  onChange={handleUrlChange}
+                  placeholder="https://xxx.larksuite.com/base/bascnXXX?table=tblXXX"
+                  className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all ${
+                    urlError ? 'border-red-300' : 'border-gray-300'
+                  }`}
+                />
+                {urlError && (
+                  <p className="text-xs text-red-500 mt-2">{urlError}</p>
+                )}
+                {urlInfo && (
+                  <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-lg">
+                    <p className="text-xs text-green-700">
+                      <span className="font-medium">App Token:</span> {urlInfo.appToken}
+                      <span className="mx-2">|</span>
+                      <span className="font-medium">Table ID:</span> {urlInfo.tableId}
+                    </p>
+                  </div>
+                )}
+                <p className="text-xs text-gray-500 mt-2">
+                  インポート先のLark Baseテーブルを開き、URLをコピーして貼り付けてください
+                </p>
+              </div>
+
+              {/* Divider */}
+              <div className="border-t border-gray-200 pt-6">
+                <h3 className="text-sm font-medium text-gray-700 mb-4">JSONデータ</h3>
+                <JsonUploader onJsonParsed={handleJsonParsed} />
+              </div>
+            </div>
+          )}
+
+          {step === 'preview' && jsonData && (
+            <div className="space-y-6">
+              {/* Import Target Info */}
+              {urlInfo && (
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <h3 className="text-sm font-medium text-blue-800 mb-2">インポート先</h3>
+                  <p className="text-sm text-blue-700">
+                    <span className="font-medium">App Token:</span> {urlInfo.appToken}
+                    <span className="mx-3">|</span>
+                    <span className="font-medium">Table ID:</span> {urlInfo.tableId}
+                  </p>
+                </div>
+              )}
+
+              {error && (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+                  <p className="text-red-600 text-sm">{error}</p>
+                </div>
+              )}
+
+              <FieldPreview
+                data={jsonData}
+                fileName={sourceName}
+                onConfirm={handleImport}
+                onCancel={handleCancel}
+                isLoading={isLoading}
+              />
+            </div>
+          )}
+
+          {step === 'success' && result && (
+            <div className="text-center py-8">
+              <div className="text-6xl mb-4">🎉</div>
+              <h2 className="text-2xl font-bold text-gray-800 mb-2">
+                インポート完了！
+              </h2>
+              <p className="text-gray-600 mb-6">
+                JSONデータがLark Baseに正常にインポートされました
+              </p>
+
+              <div className="bg-gray-50 rounded-xl p-6 mb-6 text-left max-w-md mx-auto">
+                <h3 className="font-medium text-gray-700 mb-3">インポート結果</h3>
+                <dl className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <dt className="text-gray-500">テーブルID:</dt>
+                    <dd className="font-mono text-gray-800">{result.tableId}</dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-gray-500">レコードID:</dt>
+                    <dd className="font-mono text-gray-800">{result.recordId}</dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-gray-500">フィールド数:</dt>
+                    <dd className="font-mono text-gray-800">{result.fieldsCount}</dd>
+                  </div>
+                </dl>
+              </div>
+
+              <button
+                onClick={handleReset}
+                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                別のJSONをインポート
+              </button>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* Footer */}
+      <footer className="text-center py-6 text-sm text-gray-500">
+        <p>JSON → Lark Base Importer | Powered by Next.js</p>
+      </footer>
+    </div>
+  );
+}

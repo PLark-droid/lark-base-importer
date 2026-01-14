@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "miyabi-mcp-bundle": {
+      "command": "npx",
+      "args": ["-y", "miyabi-mcp-bundle"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}",
+        "GITHUB_DEFAULT_OWNER": "${GITHUB_DEFAULT_OWNER}",
+        "GITHUB_DEFAULT_REPO": "${GITHUB_DEFAULT_REPO}"
+      },
+      "disabled": false,
+      "description": "Miyabi MCP Bundle - 172+ tools for Git, GitHub, System, Docker, K8s, etc."
+    }
+  }
+}
