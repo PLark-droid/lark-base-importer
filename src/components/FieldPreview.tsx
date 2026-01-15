@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 
 interface FieldPreviewProps {
   data: Record<string, unknown>;
@@ -10,25 +10,45 @@ interface FieldPreviewProps {
   isLoading?: boolean;
 }
 
-function getValueType(value: unknown): string {
-  if (value === null) return 'null';
-  if (value === undefined) return 'undefined';
+type FieldType = 'string' | 'number' | 'boolean' | 'url' | 'email' | 'longtext' | 'array' | 'object' | 'null';
+
+function inferFieldType(key: string, value: unknown): FieldType {
+  if (value === null || value === undefined) return 'null';
   if (Array.isArray(value)) return 'array';
-  return typeof value;
+  if (typeof value === 'object') return 'object';
+  if (typeof value === 'boolean') return 'boolean';
+  if (typeof value === 'number') return 'number';
+  if (typeof value === 'string') {
+    // URL detection
+    if (/^https?:\/\//.test(value)) return 'url';
+    // Email detection
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return 'email';
+    // Long text detection (over 100 chars or contains newlines)
+    if (value.length > 100 || value.includes('\n')) return 'longtext';
+    return 'string';
+  }
+  return 'string';
 }
 
-function formatValue(value: unknown): string {
+function formatValue(value: unknown, maxLength: number = 80): string {
   if (value === null || value === undefined) return '-';
   if (typeof value === 'object') {
-    return JSON.stringify(value, null, 2).slice(0, 100) + (JSON.stringify(value).length > 100 ? '...' : '');
+    const str = JSON.stringify(value);
+    return str.length > maxLength ? str.slice(0, maxLength) + '...' : str;
   }
-  if (typeof value === 'string' && value.length > 50) {
-    return value.slice(0, 50) + '...';
+  if (typeof value === 'string') {
+    // Replace newlines with visual indicator
+    const formatted = value.replace(/\n/g, ' ↵ ');
+    return formatted.length > maxLength ? formatted.slice(0, maxLength) + '...' : formatted;
+  }
+  if (typeof value === 'number') {
+    // Format large numbers with commas
+    return value.toLocaleString('ja-JP');
   }
   return String(value);
 }
 
-function getTypeColor(type: string): string {
+function getTypeColor(type: FieldType): string {
   switch (type) {
     case 'string':
       return 'bg-green-100 text-green-800';
@@ -40,6 +60,14 @@ function getTypeColor(type: string): string {
       return 'bg-yellow-100 text-yellow-800';
     case 'array':
       return 'bg-orange-100 text-orange-800';
+    case 'url':
+      return 'bg-cyan-100 text-cyan-800';
+    case 'email':
+      return 'bg-pink-100 text-pink-800';
+    case 'longtext':
+      return 'bg-indigo-100 text-indigo-800';
+    case 'null':
+      return 'bg-gray-100 text-gray-500';
     default:
       return 'bg-gray-100 text-gray-800';
   }
@@ -56,7 +84,7 @@ export default function FieldPreview({
     return Object.entries(data).map(([key, value]) => ({
       key,
       value,
-      type: getValueType(value),
+      type: inferFieldType(key, value),
     }));
   }, [data]);
 
