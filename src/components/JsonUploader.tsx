@@ -342,7 +342,7 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
             value={jsonText}
             onChange={(e) => setJsonText(e.target.value)}
             placeholder='[{"key": "value"}, {"key": "value2"}] または {"key": "value"}'
-            className="w-full h-64 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm resize-none"
+            className="w-full h-64 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono text-sm resize-none bg-white text-gray-900 placeholder-gray-400"
           />
           <button
             onClick={handleTextSubmit}

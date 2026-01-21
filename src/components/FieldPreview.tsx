@@ -10,6 +10,8 @@ export interface ImportProgress {
   failedCount: number;
   status: 'idle' | 'importing' | 'completed' | 'error';
   errors: Array<{ index: number; error: string }>;
+  currentFile?: number;
+  totalFiles?: number;
 }
 
 interface FieldPreviewProps {
@@ -164,11 +166,29 @@ export default function FieldPreview({
 
       {/* Progress Bar */}
       {progress && progress.status !== 'idle' && (
-        <div className="mb-6">
+        <div className="mb-6 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+          {/* File Progress */}
+          {progress.totalFiles && progress.totalFiles > 1 && (
+            <div className="mb-3">
+              <div className="flex justify-between text-sm text-gray-600 mb-1">
+                <span className="font-medium">ファイル進捗</span>
+                <span>{progress.currentFile || 1} / {progress.totalFiles} ファイル</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div
+                  className="h-2 rounded-full bg-green-500 transition-all duration-300"
+                  style={{ width: `${((progress.currentFile || 1) / progress.totalFiles) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Record Progress */}
           <div className="flex justify-between text-sm text-gray-600 mb-2">
-            <span>進捗: {progress.current} / {progress.total}</span>
+            <span className="font-medium">レコード進捗: {progress.current} / {progress.total}</span>
             <span>
-              成功: {progress.successCount} / 失敗: {progress.failedCount}
+              成功: <span className="text-green-600">{progress.successCount}</span> /
+              失敗: <span className="text-red-600">{progress.failedCount}</span>
             </span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-3">
@@ -176,7 +196,7 @@ export default function FieldPreview({
               className={`h-3 rounded-full transition-all duration-300 ${
                 progress.failedCount > 0 ? 'bg-yellow-500' : 'bg-blue-600'
               }`}
-              style={{ width: `${(progress.current / progress.total) * 100}%` }}
+              style={{ width: `${progress.total > 0 ? (progress.current / progress.total) * 100 : 0}%` }}
             />
           </div>
           {progress.status === 'completed' && (
@@ -205,18 +225,34 @@ export default function FieldPreview({
         </div>
       )}
 
-      {/* Field Types */}
+      {/* Field Types - Vertical Layout */}
       <div className="mb-4">
-        <h3 className="text-sm font-medium text-gray-700 mb-2">フィールド一覧</h3>
-        <div className="flex flex-wrap gap-2">
-          {fieldNames.map((name) => (
-            <div key={name} className="flex items-center gap-1">
-              <code className="text-xs bg-gray-100 px-2 py-1 rounded">{name}</code>
-              <span className={`text-xs px-2 py-0.5 rounded-full ${getTypeColor(fieldTypes[name])}`}>
-                {fieldTypes[name]}
-              </span>
-            </div>
-          ))}
+        <h3 className="text-sm font-medium text-gray-700 mb-2">フィールド一覧 ({fieldNames.length}項目)</h3>
+        <div className="border border-gray-200 rounded-lg overflow-hidden max-h-48 overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 sticky top-0">
+              <tr>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 w-8">#</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-600">フィールド名</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 w-24">型</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {fieldNames.map((name, idx) => (
+                <tr key={name} className="hover:bg-gray-50">
+                  <td className="px-3 py-1.5 text-xs text-gray-400">{idx + 1}</td>
+                  <td className="px-3 py-1.5">
+                    <code className="text-xs text-gray-800">{name}</code>
+                  </td>
+                  <td className="px-3 py-1.5">
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${getTypeColor(fieldTypes[name])}`}>
+                      {fieldTypes[name]}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 

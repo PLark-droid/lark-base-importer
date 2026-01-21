@@ -107,13 +107,15 @@ export default function Home() {
       failedCount: 0,
       status: 'importing',
       errors: [],
+      currentFile: 1,
+      totalFiles: validFiles.length,
     });
 
-    // Update file statuses to processing
+    // Update file statuses to pending before processing
     setParsedFiles((prev) =>
-      prev.map((f) =>
+      prev.map((f, idx) =>
         f.status !== 'error'
-          ? { ...f, status: 'processing' as const }
+          ? { ...f, status: idx === 0 ? 'processing' as const : 'pending' as const }
           : f
       )
     );
@@ -122,11 +124,35 @@ export default function Home() {
     let failedCount = 0;
     let createdFieldsCount = 0;
     const errors: Array<{ index: number; error: string }> = [];
+    let processedRecords = 0;
+    let currentFileIdx = 0;
 
     // Process records in batches of 500
     const batchSize = 500;
     for (let i = 0; i < allRecords.length; i += batchSize) {
       const batch = allRecords.slice(i, i + batchSize);
+
+      // Update current file index based on processed records
+      let recordCount = 0;
+      for (let fIdx = 0; fIdx < validFiles.length; fIdx++) {
+        recordCount += validFiles[fIdx].records.length;
+        if (processedRecords + batch.length <= recordCount) {
+          if (fIdx !== currentFileIdx) {
+            currentFileIdx = fIdx;
+            // Update file statuses
+            setParsedFiles((prev) =>
+              prev.map((f, idx) => {
+                if (f.status === 'error') return f;
+                const validIdx = prev.filter((pf) => pf.status !== 'error').indexOf(f);
+                if (validIdx < currentFileIdx) return { ...f, status: 'success' as const };
+                if (validIdx === currentFileIdx) return { ...f, status: 'processing' as const };
+                return { ...f, status: 'pending' as const };
+              })
+            );
+          }
+          break;
+        }
+      }
 
       try {
         const response = await fetch('/api/import', {
@@ -174,13 +200,17 @@ export default function Home() {
         failedCount += batch.length;
       }
 
-      // Update progress
+      processedRecords += batch.length;
+
+      // Update progress with file info
       setImportProgress((prev) => ({
         ...prev,
         current: Math.min(i + batchSize, allRecords.length),
         successCount,
         failedCount,
         errors,
+        currentFile: currentFileIdx + 1,
+        totalFiles: validFiles.length,
       }));
     }
 
@@ -309,7 +339,7 @@ export default function Home() {
                   value={larkUrl}
                   onChange={handleUrlChange}
                   placeholder="https://xxx.larksuite.com/base/bascnXXX?table=tblXXX"
-                  className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all ${
+                  className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white text-gray-900 placeholder-gray-400 ${
                     urlError ? 'border-red-300' : 'border-gray-300'
                   }`}
                 />
