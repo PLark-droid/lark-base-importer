@@ -69,6 +69,24 @@ interface LarkAddRecordResponse {
   };
 }
 
+interface LarkBatchCreateRecordsResponse {
+  code: number;
+  msg: string;
+  data?: {
+    records: Array<{
+      record_id: string;
+      fields: Record<string, unknown>;
+    }>;
+  };
+}
+
+export interface BatchCreateResult {
+  successCount: number;
+  failedCount: number;
+  recordIds: string[];
+  errors: Array<{ index: number; error: string }>;
+}
+
 interface LarkFieldListResponse {
   code: number;
   msg: string;
@@ -312,6 +330,98 @@ export async function addRecord(
   }
 
   return data.data.record.record_id;
+}
+
+/**
+ * レコードのフィールド値を処理（配列やオブジェクトはJSON文字列に）
+ */
+function processFieldValues(fields: Record<string, unknown>): Record<string, unknown> {
+  const processed: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (Array.isArray(value) || (typeof value === 'object' && value !== null)) {
+      processed[key] = JSON.stringify(value);
+    } else if (value === null || value === undefined) {
+      processed[key] = '';
+    } else {
+      processed[key] = value;
+    }
+  }
+  return processed;
+}
+
+/**
+ * 複数レコードをバッチで追加（最大500レコード/リクエスト）
+ */
+export async function batchCreateRecords(
+  token: string,
+  appToken: string,
+  tableId: string,
+  records: Array<Record<string, unknown>>
+): Promise<BatchCreateResult> {
+  const BATCH_SIZE = 500;
+  const result: BatchCreateResult = {
+    successCount: 0,
+    failedCount: 0,
+    recordIds: [],
+    errors: [],
+  };
+
+  // Split records into batches of 500
+  for (let i = 0; i < records.length; i += BATCH_SIZE) {
+    const batch = records.slice(i, i + BATCH_SIZE);
+    const batchRecords = batch.map((fields) => ({
+      fields: processFieldValues(fields),
+    }));
+
+    try {
+      const res = await fetch(
+        `${LARK_API_BASE}/bitable/v1/apps/${appToken}/tables/${tableId}/records/batch_create`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({ records: batchRecords }),
+        }
+      );
+
+      const data: LarkBatchCreateRecordsResponse = await res.json();
+
+      if (data.code !== 0) {
+        console.error('Batch create error:', {
+          code: data.code,
+          msg: data.msg,
+          batchStart: i,
+          batchSize: batch.length,
+        });
+
+        // Mark all records in this batch as failed
+        for (let j = 0; j < batch.length; j++) {
+          result.errors.push({
+            index: i + j,
+            error: data.msg || 'Unknown error',
+          });
+        }
+        result.failedCount += batch.length;
+      } else if (data.data?.records) {
+        result.successCount += data.data.records.length;
+        result.recordIds.push(...data.data.records.map((r) => r.record_id));
+      }
+    } catch (error) {
+      console.error('Batch create exception:', error);
+      // Mark all records in this batch as failed
+      for (let j = 0; j < batch.length; j++) {
+        result.errors.push({
+          index: i + j,
+          error: error instanceof Error ? error.message : 'Network error',
+        });
+      }
+      result.failedCount += batch.length;
+    }
+  }
+
+  return result;
 }
 
 /**

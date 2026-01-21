@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getTenantAccessToken,
-  addRecord,
   getTableFields,
   createField,
   inferFieldType,
+  batchCreateRecords,
+  BatchCreateResult,
 } from '@/lib/lark';
 
 interface ImportRequest {
-  jsonData: Record<string, unknown>;
+  records: Array<Record<string, unknown>>;
   appToken: string;
   tableId: string;
 }
@@ -16,12 +17,12 @@ interface ImportRequest {
 export async function POST(request: NextRequest) {
   try {
     const body: ImportRequest = await request.json();
-    const { jsonData, appToken, tableId } = body;
+    const { records, appToken, tableId } = body;
 
     // バリデーション
-    if (!jsonData || typeof jsonData !== 'object') {
+    if (!records || !Array.isArray(records) || records.length === 0) {
       return NextResponse.json(
-        { error: 'JSONデータが無効です' },
+        { error: 'レコードデータが無効です' },
         { status: 400 }
       );
     }
@@ -53,39 +54,65 @@ export async function POST(request: NextRequest) {
 
     // 2. 既存テーブルのフィールド一覧を取得
     const existingFields = await getTableFields(token, appToken, tableId);
-    const existingFieldNames = new Set(existingFields.map(f => f.field_name));
+    const existingFieldNames = new Set(existingFields.map((f) => f.field_name));
 
-    // 3. 不足しているフィールドを自動作成
-    const jsonFieldNames = Object.keys(jsonData);
-    const missingFields = jsonFieldNames.filter(name => !existingFieldNames.has(name));
+    // 3. 全レコードから一意のフィールド名を収集
+    const allFieldNames = new Set<string>();
+    records.forEach((record) => {
+      Object.keys(record).forEach((key) => allFieldNames.add(key));
+    });
+
+    // 4. 不足しているフィールドを自動作成
+    const missingFields = Array.from(allFieldNames).filter(
+      (name) => !existingFieldNames.has(name)
+    );
 
     if (missingFields.length > 0) {
       console.log(`Creating ${missingFields.length} missing fields:`, missingFields);
 
       for (const fieldName of missingFields) {
-        const fieldValue = jsonData[fieldName];
+        // Find first non-null value to infer type
+        let fieldValue: unknown = null;
+        for (const record of records) {
+          if (record[fieldName] !== null && record[fieldName] !== undefined) {
+            fieldValue = record[fieldName];
+            break;
+          }
+        }
         const fieldType = inferFieldType(fieldValue);
 
         try {
           await createField(token, appToken, tableId, fieldName, fieldType);
-          console.log(`✓ Created field: ${fieldName} (type: ${fieldType})`);
+          console.log(`Created field: ${fieldName} (type: ${fieldType})`);
         } catch (error) {
-          console.error(`✗ Failed to create field: ${fieldName}`, error);
+          console.error(`Failed to create field: ${fieldName}`, error);
           throw error;
         }
       }
     }
 
-    // 4. 既存テーブルにレコード追加
-    const recordId = await addRecord(token, appToken, tableId, jsonData);
+    // 5. バッチでレコードを追加
+    const result: BatchCreateResult = await batchCreateRecords(
+      token,
+      appToken,
+      tableId,
+      records
+    );
 
     return NextResponse.json({
-      success: true,
-      message: 'インポートが完了しました',
+      success: result.failedCount === 0,
+      message:
+        result.failedCount === 0
+          ? 'インポートが完了しました'
+          : `${result.successCount}件成功、${result.failedCount}件失敗`,
       data: {
         tableId,
-        recordId,
-        fieldsCount: Object.keys(jsonData).length,
+        totalRecords: records.length,
+        successCount: result.successCount,
+        failedCount: result.failedCount,
+        recordIds: result.recordIds,
+        errors: result.errors,
+        fieldsCount: allFieldNames.size,
         createdFieldsCount: missingFields.length,
       },
     });

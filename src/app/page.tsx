@@ -1,29 +1,35 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import JsonUploader from '@/components/JsonUploader';
-import FieldPreview from '@/components/FieldPreview';
+import JsonUploader, { ParsedFile } from '@/components/JsonUploader';
+import FieldPreview, { ImportProgress } from '@/components/FieldPreview';
 import { parseLarkBaseUrl, LarkBaseUrlInfo } from '@/lib/lark';
 
 type Step = 'upload' | 'preview' | 'success';
 
-interface ImportResult {
-  tableId: string;
-  recordId: string;
-  fieldsCount: number;
+interface ImportSummary {
+  totalRecords: number;
+  successCount: number;
+  failedCount: number;
   createdFieldsCount: number;
 }
 
 export default function Home() {
   const [step, setStep] = useState<Step>('upload');
-  const [jsonData, setJsonData] = useState<Record<string, unknown> | null>(null);
-  const [sourceName, setSourceName] = useState('');
+  const [parsedFiles, setParsedFiles] = useState<ParsedFile[]>([]);
   const [larkUrl, setLarkUrl] = useState('');
   const [urlInfo, setUrlInfo] = useState<LarkBaseUrlInfo | null>(null);
   const [urlError, setUrlError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<ImportResult | null>(null);
+  const [importProgress, setImportProgress] = useState<ImportProgress>({
+    current: 0,
+    total: 0,
+    successCount: 0,
+    failedCount: 0,
+    status: 'idle',
+    errors: [],
+  });
+  const [summary, setSummary] = useState<ImportSummary | null>(null);
 
   const handleUrlChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const url = e.target.value;
@@ -44,66 +50,190 @@ export default function Home() {
     }
   }, []);
 
-  const handleJsonParsed = (data: Record<string, unknown>, name: string) => {
-    setJsonData(data);
-    setSourceName(name);
+  const handleJsonParsed = useCallback((files: ParsedFile[]) => {
+    setParsedFiles(files);
+  }, []);
+
+  const handleProceedToPreview = useCallback(() => {
+    const validFiles = parsedFiles.filter(
+      (f) => f.status !== 'error' && f.records.length > 0
+    );
+    if (validFiles.length === 0) {
+      setError('インポート可能なファイルがありません');
+      return;
+    }
+    if (!urlInfo) {
+      setError('Lark Base URLを入力してください');
+      return;
+    }
+    setError(null);
     setStep('preview');
-  };
+  }, [parsedFiles, urlInfo]);
 
   const handleCancel = () => {
     setStep('upload');
-    setJsonData(null);
-    setSourceName('');
     setError(null);
+    setImportProgress({
+      current: 0,
+      total: 0,
+      successCount: 0,
+      failedCount: 0,
+      status: 'idle',
+      errors: [],
+    });
   };
 
   const handleImport = async () => {
-    if (!jsonData || !urlInfo) {
-      setError('JSONデータとLark Base URLが必要です');
+    if (!urlInfo) {
+      setError('Lark Base URLが必要です');
       return;
     }
 
-    setIsLoading(true);
+    const validFiles = parsedFiles.filter(
+      (f) => f.status !== 'error' && f.records.length > 0
+    );
+    const allRecords = validFiles.flatMap((f) => f.records.map((r) => r.data));
+
+    if (allRecords.length === 0) {
+      setError('インポートするレコードがありません');
+      return;
+    }
+
     setError(null);
+    setImportProgress({
+      current: 0,
+      total: allRecords.length,
+      successCount: 0,
+      failedCount: 0,
+      status: 'importing',
+      errors: [],
+    });
 
-    try {
-      const response = await fetch('/api/import', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          jsonData,
-          appToken: urlInfo.appToken,
-          tableId: urlInfo.tableId,
-        }),
-      });
+    // Update file statuses to processing
+    setParsedFiles((prev) =>
+      prev.map((f) =>
+        f.status !== 'error'
+          ? { ...f, status: 'processing' as const }
+          : f
+      )
+    );
 
-      const data = await response.json();
+    let successCount = 0;
+    let failedCount = 0;
+    let createdFieldsCount = 0;
+    const errors: Array<{ index: number; error: string }> = [];
 
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || 'インポートに失敗しました');
+    // Process records in batches of 500
+    const batchSize = 500;
+    for (let i = 0; i < allRecords.length; i += batchSize) {
+      const batch = allRecords.slice(i, i + batchSize);
+
+      try {
+        const response = await fetch('/api/import', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            records: batch,
+            appToken: urlInfo.appToken,
+            tableId: urlInfo.tableId,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+          // Handle batch failure
+          for (let j = 0; j < batch.length; j++) {
+            errors.push({
+              index: i + j,
+              error: data.error || 'インポートに失敗しました',
+            });
+          }
+          failedCount += batch.length;
+        } else {
+          successCount += data.data?.successCount || batch.length;
+          failedCount += data.data?.failedCount || 0;
+          createdFieldsCount += data.data?.createdFieldsCount || 0;
+          if (data.data?.errors) {
+            errors.push(...data.data.errors.map((e: { index: number; error: string }) => ({
+              index: i + e.index,
+              error: e.error,
+            })));
+          }
+        }
+      } catch (err) {
+        // Handle network/unexpected errors
+        for (let j = 0; j < batch.length; j++) {
+          errors.push({
+            index: i + j,
+            error: err instanceof Error ? err.message : 'エラーが発生しました',
+          });
+        }
+        failedCount += batch.length;
       }
 
-      setResult(data.data);
+      // Update progress
+      setImportProgress((prev) => ({
+        ...prev,
+        current: Math.min(i + batchSize, allRecords.length),
+        successCount,
+        failedCount,
+        errors,
+      }));
+    }
+
+    // Update file statuses based on results
+    setParsedFiles((prev) =>
+      prev.map((f) =>
+        f.status === 'processing'
+          ? { ...f, status: failedCount === 0 ? 'success' : 'error' }
+          : f
+      )
+    );
+
+    setImportProgress((prev) => ({
+      ...prev,
+      status: 'completed',
+    }));
+
+    setSummary({
+      totalRecords: allRecords.length,
+      successCount,
+      failedCount,
+      createdFieldsCount,
+    });
+
+    if (failedCount === 0) {
       setStep('success');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'エラーが発生しました');
-    } finally {
-      setIsLoading(false);
     }
   };
 
   const handleReset = () => {
     setStep('upload');
-    setJsonData(null);
-    setSourceName('');
+    setParsedFiles([]);
     setLarkUrl('');
     setUrlInfo(null);
     setUrlError(null);
     setError(null);
-    setResult(null);
+    setImportProgress({
+      current: 0,
+      total: 0,
+      successCount: 0,
+      failedCount: 0,
+      status: 'idle',
+      errors: [],
+    });
+    setSummary(null);
   };
+
+  const validFileCount = parsedFiles.filter(
+    (f) => f.status !== 'error' && f.records.length > 0
+  ).length;
+  const totalRecordCount = parsedFiles
+    .filter((f) => f.status !== 'error')
+    .reduce((sum, f) => sum + f.records.length, 0);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -203,12 +333,38 @@ export default function Home() {
               {/* Divider */}
               <div className="border-t border-gray-200 pt-6">
                 <h3 className="text-sm font-medium text-gray-700 mb-4">JSONデータ</h3>
-                <JsonUploader onJsonParsed={handleJsonParsed} />
+                <JsonUploader
+                  onJsonParsed={handleJsonParsed}
+                  parsedFiles={parsedFiles}
+                />
               </div>
+
+              {/* Error Display */}
+              {error && (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+                  <p className="text-red-600 text-sm">{error}</p>
+                </div>
+              )}
+
+              {/* Proceed Button */}
+              {parsedFiles.length > 0 && (
+                <div className="pt-4 border-t border-gray-200">
+                  <button
+                    onClick={handleProceedToPreview}
+                    disabled={validFileCount === 0 || !urlInfo}
+                    className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                  >
+                    プレビューへ進む
+                    <span className="text-sm opacity-80">
+                      ({validFileCount}ファイル / {totalRecordCount}レコード)
+                    </span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
-          {step === 'preview' && jsonData && (
+          {step === 'preview' && (
             <div className="space-y-6">
               {/* Import Target Info */}
               {urlInfo && (
@@ -229,16 +385,16 @@ export default function Home() {
               )}
 
               <FieldPreview
-                data={jsonData}
-                fileName={sourceName}
+                files={parsedFiles.filter((f) => f.status !== 'error')}
                 onConfirm={handleImport}
                 onCancel={handleCancel}
-                isLoading={isLoading}
+                isLoading={importProgress.status === 'importing'}
+                progress={importProgress}
               />
             </div>
           )}
 
-          {step === 'success' && result && (
+          {step === 'success' && summary && (
             <div className="text-center py-8">
               <div className="text-6xl mb-4">🎉</div>
               <h2 className="text-2xl font-bold text-gray-800 mb-2">
@@ -252,21 +408,23 @@ export default function Home() {
                 <h3 className="font-medium text-gray-700 mb-3">インポート結果</h3>
                 <dl className="space-y-2 text-sm">
                   <div className="flex justify-between">
-                    <dt className="text-gray-500">テーブルID:</dt>
-                    <dd className="font-mono text-gray-800">{result.tableId}</dd>
+                    <dt className="text-gray-500">ファイル数:</dt>
+                    <dd className="font-mono text-gray-800">{validFileCount}ファイル</dd>
                   </div>
                   <div className="flex justify-between">
-                    <dt className="text-gray-500">レコードID:</dt>
-                    <dd className="font-mono text-gray-800">{result.recordId}</dd>
+                    <dt className="text-gray-500">レコード数:</dt>
+                    <dd className="font-mono text-gray-800">{summary.successCount}レコード</dd>
                   </div>
-                  <div className="flex justify-between">
-                    <dt className="text-gray-500">フィールド数:</dt>
-                    <dd className="font-mono text-gray-800">{result.fieldsCount}</dd>
-                  </div>
-                  {result.createdFieldsCount > 0 && (
+                  {summary.failedCount > 0 && (
                     <div className="flex justify-between">
-                      <dt className="text-gray-500">新規作成:</dt>
-                      <dd className="font-mono text-green-600">{result.createdFieldsCount}フィールド</dd>
+                      <dt className="text-gray-500">失敗:</dt>
+                      <dd className="font-mono text-red-600">{summary.failedCount}レコード</dd>
+                    </div>
+                  )}
+                  {summary.createdFieldsCount > 0 && (
+                    <div className="flex justify-between">
+                      <dt className="text-gray-500">新規フィールド:</dt>
+                      <dd className="font-mono text-green-600">{summary.createdFieldsCount}フィールド</dd>
                     </div>
                   )}
                 </dl>
