@@ -6,6 +6,8 @@ import {
   inferFieldType,
   batchCreateRecords,
   BatchCreateResult,
+  normalizeFieldName,
+  createFieldNameMapping,
 } from '@/lib/lark';
 
 interface ImportRequest {
@@ -54,18 +56,24 @@ export async function POST(request: NextRequest) {
 
     // 2. 既存テーブルのフィールド一覧を取得
     const existingFields = await getTableFields(token, appToken, tableId);
-    const existingFieldNames = new Set(existingFields.map((f) => f.field_name));
 
-    // 3. 全レコードから一意のフィールド名を収集
+    // 3. フィールド名マッピングを作成（正規化名→実際のフィールド名）
+    const fieldMapping = createFieldNameMapping(existingFields);
+    const existingNormalizedNames = new Set(
+      existingFields.map((f) => normalizeFieldName(f.field_name))
+    );
+
+    // 4. 全レコードから一意のフィールド名を収集
     const allFieldNames = new Set<string>();
     records.forEach((record) => {
       Object.keys(record).forEach((key) => allFieldNames.add(key));
     });
 
-    // 4. 不足しているフィールドを自動作成
-    const missingFields = Array.from(allFieldNames).filter(
-      (name) => !existingFieldNames.has(name)
-    );
+    // 5. 不足しているフィールドを自動作成（正規化名で比較）
+    const missingFields = Array.from(allFieldNames).filter((name) => {
+      const normalizedName = normalizeFieldName(name);
+      return !existingNormalizedNames.has(normalizedName);
+    });
 
     if (missingFields.length > 0) {
       console.log(`Creating ${missingFields.length} missing fields:`, missingFields);
@@ -91,12 +99,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 5. バッチでレコードを追加
+    // 6. バッチでレコードを追加（フィールド名マッピングを適用）
     const result: BatchCreateResult = await batchCreateRecords(
       token,
       appToken,
       tableId,
-      records
+      records,
+      fieldMapping
     );
 
     return NextResponse.json({

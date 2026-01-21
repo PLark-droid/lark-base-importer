@@ -56,7 +56,21 @@
       "Bash(ls:*)",
       "Bash(npx:*)",
       "Bash(gh issue create:*)",
-      "Bash(tee:*)"
+      "Bash(tee:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)",
+      "Bash(gh issue view:*)",
+      "Bash(npm run lint:*)",
+      "Bash(npm run lint)",
+      "Bash(git stash:*)",
+      "Bash(git checkout:*)",
+      "Bash(gh pr create:*)",
+      "Bash(git merge:*)",
+      "Bash(git fetch:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(git pull:*)"
     ]
   }
 }

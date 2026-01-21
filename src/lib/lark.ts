@@ -112,6 +112,56 @@ interface LarkCreateFieldResponse {
 }
 
 /**
+ * フィールド名を正規化（全角→半角の変換）
+ * 括弧、コロン、その他記号を統一
+ */
+export function normalizeFieldName(name: string): string {
+  return name
+    // 全角括弧→半角
+    .replace(/（/g, '(')
+    .replace(/）/g, ')')
+    // 全角コロン→半角
+    .replace(/：/g, ':')
+    // 全角スペース→半角
+    .replace(/　/g, ' ')
+    // 連続スペースを1つに
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * 既存フィールド名から正規化名→実際のフィールド名のマッピングを作成
+ */
+export function createFieldNameMapping(
+  existingFields: Array<{ field_name: string }>
+): Map<string, string> {
+  const mapping = new Map<string, string>();
+  for (const field of existingFields) {
+    const normalized = normalizeFieldName(field.field_name);
+    // 正規化名→実際のフィールド名
+    mapping.set(normalized, field.field_name);
+  }
+  return mapping;
+}
+
+/**
+ * JSONフィールドを既存フィールド名にマッピング
+ */
+export function mapFieldsToExisting(
+  fields: Record<string, unknown>,
+  fieldMapping: Map<string, string>
+): Record<string, unknown> {
+  const mapped: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    const normalizedKey = normalizeFieldName(key);
+    // 正規化名でマッチする既存フィールドがあればそちらを使用
+    const actualFieldName = fieldMapping.get(normalizedKey) || key;
+    mapped[actualFieldName] = value;
+  }
+  return mapped;
+}
+
+/**
  * Tenant Access Token を取得
  */
 export async function getTenantAccessToken(): Promise<string> {
@@ -334,16 +384,27 @@ export async function addRecord(
 
 /**
  * レコードのフィールド値を処理（配列やオブジェクトはJSON文字列に）
+ * オプションでフィールド名マッピングを適用
  */
-function processFieldValues(fields: Record<string, unknown>): Record<string, unknown> {
+function processFieldValues(
+  fields: Record<string, unknown>,
+  fieldMapping?: Map<string, string>
+): Record<string, unknown> {
   const processed: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(fields)) {
+    // マッピングがあれば正規化名でマッチする既存フィールド名を使用
+    let actualKey = key;
+    if (fieldMapping) {
+      const normalizedKey = normalizeFieldName(key);
+      actualKey = fieldMapping.get(normalizedKey) || key;
+    }
+
     if (Array.isArray(value) || (typeof value === 'object' && value !== null)) {
-      processed[key] = JSON.stringify(value);
+      processed[actualKey] = JSON.stringify(value);
     } else if (value === null || value === undefined) {
-      processed[key] = '';
+      processed[actualKey] = '';
     } else {
-      processed[key] = value;
+      processed[actualKey] = value;
     }
   }
   return processed;
@@ -351,12 +412,14 @@ function processFieldValues(fields: Record<string, unknown>): Record<string, unk
 
 /**
  * 複数レコードをバッチで追加（最大500レコード/リクエスト）
+ * fieldMappingを指定すると、JSONフィールド名を既存フィールド名にマッピング
  */
 export async function batchCreateRecords(
   token: string,
   appToken: string,
   tableId: string,
-  records: Array<Record<string, unknown>>
+  records: Array<Record<string, unknown>>,
+  fieldMapping?: Map<string, string>
 ): Promise<BatchCreateResult> {
   const BATCH_SIZE = 500;
   const result: BatchCreateResult = {
@@ -370,7 +433,7 @@ export async function batchCreateRecords(
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     const batch = records.slice(i, i + BATCH_SIZE);
     const batchRecords = batch.map((fields) => ({
-      fields: processFieldValues(fields),
+      fields: processFieldValues(fields, fieldMapping),
     }));
 
     try {
