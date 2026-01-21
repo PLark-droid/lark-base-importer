@@ -11,6 +11,7 @@ interface ImportResult {
   tableId: string;
   recordId: string;
   fieldsCount: number;
+  createdFieldsCount: number;
 }
 
 export default function Home() {
@@ -262,6 +263,12 @@ export default function Home() {
                     <dt className="text-gray-500">フィールド数:</dt>
                     <dd className="font-mono text-gray-800">{result.fieldsCount}</dd>
                   </div>
+                  {result.createdFieldsCount > 0 && (
+                    <div className="flex justify-between">
+                      <dt className="text-gray-500">新規作成:</dt>
+                      <dd className="font-mono text-green-600">{result.createdFieldsCount}フィールド</dd>
+                    </div>
+                  )}
                 </dl>
               </div>
 

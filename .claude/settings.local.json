@@ -43,7 +43,20 @@
       "Bash(gh issue close:*)",
       "Skill(review)",
       "Bash(npx tsc:*)",
-      "Bash(npx eslint:*)"
+      "Bash(npx eslint:*)",
+      "Bash(npx next dev)",
+      "Bash(cmd.exe /c \"npm run dev\")",
+      "Bash(node:*)",
+      "Bash(npx vercel --version)",
+      "Bash(npx vercel deploy:*)",
+      "Bash(npx vercel:*)",
+      "Bash(npm install:*)",
+      "Bash(vercel --version:*)",
+      "Bash(npm config:*)",
+      "Bash(ls:*)",
+      "Bash(npx:*)",
+      "Bash(gh issue create:*)",
+      "Bash(tee:*)"
     ]
   }
 }

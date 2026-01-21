@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   getTenantAccessToken,
   addRecord,
+  getTableFields,
+  createField,
+  inferFieldType,
 } from '@/lib/lark';
 
 interface ImportRequest {
@@ -48,7 +51,32 @@ export async function POST(request: NextRequest) {
     // 1. トークン取得
     const token = await getTenantAccessToken();
 
-    // 2. 既存テーブルにレコード追加
+    // 2. 既存テーブルのフィールド一覧を取得
+    const existingFields = await getTableFields(token, appToken, tableId);
+    const existingFieldNames = new Set(existingFields.map(f => f.field_name));
+
+    // 3. 不足しているフィールドを自動作成
+    const jsonFieldNames = Object.keys(jsonData);
+    const missingFields = jsonFieldNames.filter(name => !existingFieldNames.has(name));
+
+    if (missingFields.length > 0) {
+      console.log(`Creating ${missingFields.length} missing fields:`, missingFields);
+
+      for (const fieldName of missingFields) {
+        const fieldValue = jsonData[fieldName];
+        const fieldType = inferFieldType(fieldValue);
+
+        try {
+          await createField(token, appToken, tableId, fieldName, fieldType);
+          console.log(`✓ Created field: ${fieldName} (type: ${fieldType})`);
+        } catch (error) {
+          console.error(`✗ Failed to create field: ${fieldName}`, error);
+          throw error;
+        }
+      }
+    }
+
+    // 4. 既存テーブルにレコード追加
     const recordId = await addRecord(token, appToken, tableId, jsonData);
 
     return NextResponse.json({
@@ -58,6 +86,7 @@ export async function POST(request: NextRequest) {
         tableId,
         recordId,
         fieldsCount: Object.keys(jsonData).length,
+        createdFieldsCount: missingFields.length,
       },
     });
   } catch (error) {

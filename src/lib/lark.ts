@@ -69,6 +69,30 @@ interface LarkAddRecordResponse {
   };
 }
 
+interface LarkFieldListResponse {
+  code: number;
+  msg: string;
+  data?: {
+    items: Array<{
+      field_id: string;
+      field_name: string;
+      type: number;
+    }>;
+  };
+}
+
+interface LarkCreateFieldResponse {
+  code: number;
+  msg: string;
+  data?: {
+    field: {
+      field_id: string;
+      field_name: string;
+      type: number;
+    };
+  };
+}
+
 /**
  * Tenant Access Token を取得
  */
@@ -96,7 +120,7 @@ export async function getTenantAccessToken(): Promise<string> {
 /**
  * JSONキーからLark Baseのフィールドタイプを推測
  */
-function inferFieldType(value: unknown): number {
+export function inferFieldType(value: unknown): number {
   if (value === null || value === undefined) {
     return 1; // Text
   }
@@ -167,6 +191,79 @@ export async function createTable(
 }
 
 /**
+ * テーブルのフィールド一覧を取得
+ */
+export async function getTableFields(
+  token: string,
+  appToken: string,
+  tableId: string
+): Promise<Array<{ field_id: string; field_name: string; type: number }>> {
+  const res = await fetch(
+    `${LARK_API_BASE}/bitable/v1/apps/${appToken}/tables/${tableId}/fields`,
+    {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    }
+  );
+
+  const data: LarkFieldListResponse = await res.json();
+
+  if (data.code !== 0 || !data.data?.items) {
+    console.error('Failed to get fields:', {
+      code: data.code,
+      msg: data.msg,
+      httpStatus: res.status,
+    });
+    throw new Error(`Failed to get table fields: ${data.msg} (code: ${data.code})`);
+  }
+
+  return data.data.items;
+}
+
+/**
+ * 新規フィールドを作成
+ */
+export async function createField(
+  token: string,
+  appToken: string,
+  tableId: string,
+  fieldName: string,
+  fieldType: number
+): Promise<string> {
+  const res = await fetch(
+    `${LARK_API_BASE}/bitable/v1/apps/${appToken}/tables/${tableId}/fields`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        field_name: fieldName,
+        type: fieldType,
+      }),
+    }
+  );
+
+  const data: LarkCreateFieldResponse = await res.json();
+
+  if (data.code !== 0 || !data.data?.field.field_id) {
+    console.error('Failed to create field:', {
+      code: data.code,
+      msg: data.msg,
+      httpStatus: res.status,
+      fieldName,
+      fieldType,
+    });
+    throw new Error(`Failed to create field "${fieldName}": ${data.msg} (code: ${data.code})`);
+  }
+
+  return data.data.field.field_id;
+}
+
+/**
  * レコードを追加
  */
 export async function addRecord(
@@ -205,7 +302,13 @@ export async function addRecord(
   const data: LarkAddRecordResponse = await res.json();
 
   if (data.code !== 0 || !data.data?.record.record_id) {
-    throw new Error(`Failed to add record: ${data.msg}`);
+    console.error('Lark API Error:', {
+      code: data.code,
+      msg: data.msg,
+      httpStatus: res.status,
+      response: data,
+    });
+    throw new Error(`Failed to add record: ${data.msg} (code: ${data.code})`);
   }
 
   return data.data.record.record_id;
