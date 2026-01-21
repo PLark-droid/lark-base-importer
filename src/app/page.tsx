@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import JsonUploader, { ParsedFile } from '@/components/JsonUploader';
-import FieldPreview, { ImportProgress } from '@/components/FieldPreview';
+import FieldPreview, { ImportProgress, FieldTypeMapping } from '@/components/FieldPreview';
 import { parseLarkBaseUrl, LarkBaseUrlInfo } from '@/lib/lark';
 
 type Step = 'upload' | 'preview' | 'success';
@@ -83,7 +83,7 @@ export default function Home() {
     });
   };
 
-  const handleImport = async () => {
+  const handleImport = async (fieldTypes: FieldTypeMapping) => {
     if (!urlInfo) {
       setError('Lark Base URLが必要です');
       return;
@@ -110,6 +110,9 @@ export default function Home() {
       currentFile: 1,
       totalFiles: validFiles.length,
     });
+
+    // フィールド型情報をログ出力（デバッグ用）
+    console.log('Selected field types:', fieldTypes);
 
     // Update file statuses to pending before processing
     setParsedFiles((prev) =>
@@ -177,6 +180,7 @@ export default function Home() {
             records: batch,
             appToken: urlInfo.appToken,
             tableId: urlInfo.tableId,
+            fieldTypes,
           }),
         });
 

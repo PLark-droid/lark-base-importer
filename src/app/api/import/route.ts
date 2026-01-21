@@ -10,16 +10,37 @@ import {
   createFieldNameMapping,
 } from '@/lib/lark';
 
+// Lark Base フィールド型のマッピング
+type LarkFieldType = 'text' | 'number' | 'checkbox' | 'url' | 'datetime' | 'phone';
+
+interface FieldTypeMapping {
+  [fieldName: string]: LarkFieldType;
+}
+
+// フロントエンドの型名からLark APIの型番号に変換
+function larkTypeToNumber(type: LarkFieldType): number {
+  switch (type) {
+    case 'text': return 1;
+    case 'number': return 2;
+    case 'checkbox': return 7;
+    case 'url': return 15;
+    case 'datetime': return 5;
+    case 'phone': return 13;
+    default: return 1;
+  }
+}
+
 interface ImportRequest {
   records: Array<Record<string, unknown>>;
   appToken: string;
   tableId: string;
+  fieldTypes?: FieldTypeMapping;
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: ImportRequest = await request.json();
-    const { records, appToken, tableId } = body;
+    const { records, appToken, tableId, fieldTypes } = body;
 
     // バリデーション
     if (!records || !Array.isArray(records) || records.length === 0) {
@@ -79,15 +100,22 @@ export async function POST(request: NextRequest) {
       console.log(`Creating ${missingFields.length} missing fields:`, missingFields);
 
       for (const fieldName of missingFields) {
-        // Find first non-null value to infer type
-        let fieldValue: unknown = null;
-        for (const record of records) {
-          if (record[fieldName] !== null && record[fieldName] !== undefined) {
-            fieldValue = record[fieldName];
-            break;
+        // ユーザーが選択した型があればそれを使用、なければ自動推論
+        let fieldType: number;
+        if (fieldTypes && fieldTypes[fieldName]) {
+          fieldType = larkTypeToNumber(fieldTypes[fieldName]);
+          console.log(`Using user-selected type for ${fieldName}: ${fieldTypes[fieldName]} -> ${fieldType}`);
+        } else {
+          // Find first non-null value to infer type
+          let fieldValue: unknown = null;
+          for (const record of records) {
+            if (record[fieldName] !== null && record[fieldName] !== undefined) {
+              fieldValue = record[fieldName];
+              break;
+            }
           }
+          fieldType = inferFieldType(fieldValue);
         }
-        const fieldType = inferFieldType(fieldValue);
 
         try {
           await createField(token, appToken, tableId, fieldName, fieldType);

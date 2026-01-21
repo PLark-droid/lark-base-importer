@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { ParsedFile, ParsedRecord } from './JsonUploader';
 
 export interface ImportProgress {
@@ -14,17 +14,44 @@ export interface ImportProgress {
   totalFiles?: number;
 }
 
+// Lark Base フィールド型の定義
+export type LarkFieldType = 'text' | 'number' | 'checkbox' | 'url' | 'datetime' | 'phone';
+
+export interface FieldTypeMapping {
+  [fieldName: string]: LarkFieldType;
+}
+
 interface FieldPreviewProps {
   files: ParsedFile[];
-  onConfirm: () => void;
+  onConfirm: (fieldTypes: FieldTypeMapping) => void;
   onCancel: () => void;
   isLoading?: boolean;
   progress?: ImportProgress;
 }
 
-type FieldType = 'string' | 'number' | 'boolean' | 'url' | 'email' | 'longtext' | 'array' | 'object' | 'null';
+type InferredType = 'string' | 'number' | 'boolean' | 'url' | 'email' | 'longtext' | 'array' | 'object' | 'null';
 
-function inferFieldType(value: unknown): FieldType {
+// 選択可能なLark Base型のオプション
+const LARK_TYPE_OPTIONS: { value: LarkFieldType; label: string }[] = [
+  { value: 'text', label: 'テキスト' },
+  { value: 'number', label: '数値' },
+  { value: 'checkbox', label: 'チェックボックス' },
+  { value: 'url', label: 'URL' },
+  { value: 'datetime', label: '日時' },
+  { value: 'phone', label: '電話番号' },
+];
+
+// 推論された型からLark型への初期マッピング
+function inferredTypeToLarkType(type: InferredType): LarkFieldType {
+  switch (type) {
+    case 'number': return 'number';
+    case 'boolean': return 'checkbox';
+    case 'url': return 'url';
+    default: return 'text';
+  }
+}
+
+function inferFieldType(value: unknown): InferredType {
   if (value === null || value === undefined) return 'null';
   if (Array.isArray(value)) return 'array';
   if (typeof value === 'object') return 'object';
@@ -55,7 +82,7 @@ function formatValue(value: unknown, maxLength: number = 50): string {
   return String(value);
 }
 
-function getTypeColor(type: FieldType): string {
+function getTypeColor(type: InferredType): string {
   switch (type) {
     case 'string': return 'bg-green-100 text-green-800';
     case 'number': return 'bg-blue-100 text-blue-800';
@@ -100,8 +127,8 @@ export default function FieldPreview({
   }, [allRecords]);
 
   // Infer types from first non-null value
-  const fieldTypes = useMemo(() => {
-    const types: Record<string, FieldType> = {};
+  const inferredTypes = useMemo(() => {
+    const types: Record<string, InferredType> = {};
     fieldNames.forEach((name) => {
       for (const record of allRecords) {
         const value = record.data[name];
@@ -116,6 +143,25 @@ export default function FieldPreview({
     });
     return types;
   }, [fieldNames, allRecords]);
+
+  // Lark型の選択状態を管理
+  const [selectedTypes, setSelectedTypes] = useState<FieldTypeMapping>({});
+
+  // 初期値を設定（推論された型からLark型へ変換）
+  useEffect(() => {
+    const initial: FieldTypeMapping = {};
+    fieldNames.forEach((name) => {
+      initial[name] = inferredTypeToLarkType(inferredTypes[name]);
+    });
+    setSelectedTypes(initial);
+  }, [fieldNames, inferredTypes]);
+
+  const handleTypeChange = (fieldName: string, newType: LarkFieldType) => {
+    setSelectedTypes((prev) => ({
+      ...prev,
+      [fieldName]: newType,
+    }));
+  };
 
   const totalRecords = allRecords.length;
   const previewRecords = allRecords.slice(0, previewLimit);
@@ -143,7 +189,7 @@ export default function FieldPreview({
             キャンセル
           </button>
           <button
-            onClick={onConfirm}
+            onClick={() => onConfirm(selectedTypes)}
             disabled={isLoading || isImporting || isCompleted}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
           >
@@ -225,16 +271,18 @@ export default function FieldPreview({
         </div>
       )}
 
-      {/* Field Types - Vertical Layout */}
+      {/* Field Types - Vertical Layout with Type Selection */}
       <div className="mb-4">
         <h3 className="text-sm font-medium text-gray-700 mb-2">フィールド一覧 ({fieldNames.length}項目)</h3>
-        <div className="border border-gray-200 rounded-lg overflow-hidden max-h-48 overflow-y-auto">
+        <p className="text-xs text-gray-500 mb-2">各フィールドのLark Base型を選択できます</p>
+        <div className="border border-gray-200 rounded-lg overflow-hidden max-h-64 overflow-y-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 sticky top-0">
               <tr>
                 <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 w-8">#</th>
                 <th className="px-3 py-2 text-left text-xs font-medium text-gray-600">フィールド名</th>
-                <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 w-24">型</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 w-20">検出型</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 w-36">Lark型</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -245,9 +293,23 @@ export default function FieldPreview({
                     <code className="text-xs text-gray-800">{name}</code>
                   </td>
                   <td className="px-3 py-1.5">
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${getTypeColor(fieldTypes[name])}`}>
-                      {fieldTypes[name]}
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${getTypeColor(inferredTypes[name])}`}>
+                      {inferredTypes[name]}
                     </span>
+                  </td>
+                  <td className="px-3 py-1.5">
+                    <select
+                      value={selectedTypes[name] || 'text'}
+                      onChange={(e) => handleTypeChange(name, e.target.value as LarkFieldType)}
+                      disabled={isImporting}
+                      className="w-full text-xs px-2 py-1 border border-gray-300 rounded bg-white text-gray-800 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                    >
+                      {LARK_TYPE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
                   </td>
                 </tr>
               ))}
