@@ -92,7 +92,11 @@ export default function Home() {
     const validFiles = parsedFiles.filter(
       (f) => f.status !== 'error' && f.records.length > 0
     );
-    const allRecords = validFiles.flatMap((f) => f.records.map((r) => r.data));
+    // 各レコードに元のJSONを丸ごと格納するフィールドを追加
+    const allRecords = validFiles.flatMap((f) => f.records.map((r) => ({
+      ...r.data,
+      _raw_json: JSON.stringify(r.data, null, 2),
+    })));
 
     if (allRecords.length === 0) {
       setError('インポートするレコードがありません');
