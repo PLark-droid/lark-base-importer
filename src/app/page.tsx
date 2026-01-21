@@ -124,35 +124,48 @@ export default function Home() {
     let failedCount = 0;
     let createdFieldsCount = 0;
     const errors: Array<{ index: number; error: string }> = [];
-    let processedRecords = 0;
-    let currentFileIdx = 0;
+
+    // Calculate cumulative record counts for each file
+    const fileBoundaries: number[] = [];
+    let cumulative = 0;
+    validFiles.forEach((f) => {
+      cumulative += f.records.length;
+      fileBoundaries.push(cumulative);
+    });
+
+    // Helper function to get current file index from processed record count
+    const getCurrentFileIndex = (processedCount: number): number => {
+      for (let i = 0; i < fileBoundaries.length; i++) {
+        if (processedCount < fileBoundaries[i]) {
+          return i;
+        }
+      }
+      return validFiles.length - 1;
+    };
 
     // Process records in batches of 500
     const batchSize = 500;
     for (let i = 0; i < allRecords.length; i += batchSize) {
       const batch = allRecords.slice(i, i + batchSize);
 
-      // Update current file index based on processed records
-      let recordCount = 0;
-      for (let fIdx = 0; fIdx < validFiles.length; fIdx++) {
-        recordCount += validFiles[fIdx].records.length;
-        if (processedRecords + batch.length <= recordCount) {
-          if (fIdx !== currentFileIdx) {
-            currentFileIdx = fIdx;
-            // Update file statuses
-            setParsedFiles((prev) =>
-              prev.map((f, idx) => {
-                if (f.status === 'error') return f;
-                const validIdx = prev.filter((pf) => pf.status !== 'error').indexOf(f);
-                if (validIdx < currentFileIdx) return { ...f, status: 'success' as const };
-                if (validIdx === currentFileIdx) return { ...f, status: 'processing' as const };
-                return { ...f, status: 'pending' as const };
-              })
-            );
-          }
-          break;
-        }
-      }
+      // Calculate current file being processed
+      const currentFileIdx = getCurrentFileIndex(i);
+
+      // Update file statuses
+      setParsedFiles((prev) => {
+        const validIndices = prev
+          .map((f, idx) => ({ f, idx }))
+          .filter(({ f }) => f.status !== 'error')
+          .map(({ idx }) => idx);
+
+        return prev.map((f, idx) => {
+          if (f.status === 'error') return f;
+          const validIdx = validIndices.indexOf(idx);
+          if (validIdx < currentFileIdx) return { ...f, status: 'success' as const };
+          if (validIdx === currentFileIdx) return { ...f, status: 'processing' as const };
+          return { ...f, status: 'pending' as const };
+        });
+      });
 
       try {
         const response = await fetch('/api/import', {
@@ -200,16 +213,17 @@ export default function Home() {
         failedCount += batch.length;
       }
 
-      processedRecords += batch.length;
-
       // Update progress with file info
+      const processedCount = Math.min(i + batchSize, allRecords.length);
+      const currentFileForProgress = getCurrentFileIndex(processedCount - 1) + 1;
+
       setImportProgress((prev) => ({
         ...prev,
-        current: Math.min(i + batchSize, allRecords.length),
+        current: processedCount,
         successCount,
         failedCount,
         errors,
-        currentFile: currentFileIdx + 1,
+        currentFile: currentFileForProgress,
         totalFiles: validFiles.length,
       }));
     }
