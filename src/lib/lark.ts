@@ -746,8 +746,9 @@ export async function getTableInfo(
   const cleanAppToken = appToken.trim();
   const cleanTableId = tableId.trim();
 
+  // Lark APIではテーブル一覧から取得する（個別のテーブル取得APIはない）
   const res = await fetch(
-    `${LARK_API_BASE}/bitable/v1/apps/${cleanAppToken}/tables/${cleanTableId}`,
+    `${LARK_API_BASE}/bitable/v1/apps/${cleanAppToken}/tables`,
     {
       method: 'GET',
       headers: {
@@ -756,33 +757,39 @@ export async function getTableInfo(
     }
   );
 
-  interface TableInfoResponse {
+  interface TableListResponse {
     code: number;
     msg: string;
     data?: {
-      table: {
+      items: Array<{
         table_id: string;
         name: string;
         revision: number;
-      };
+      }>;
     };
   }
 
-  const data = await safeJsonParse<TableInfoResponse>(res, 'getTableInfo');
+  const data = await safeJsonParse<TableListResponse>(res, 'getTableInfo');
 
-  if (data.code !== 0 || !data.data?.table) {
-    console.error('Failed to get table info:', {
+  if (data.code !== 0 || !data.data?.items) {
+    console.error('Failed to get table list:', {
       code: data.code,
       msg: data.msg,
       httpStatus: res.status,
     });
-    throw new Error(`Failed to get table info: ${data.msg} (code: ${data.code})`);
+    throw new Error(`Failed to get table list: ${data.msg} (code: ${data.code})`);
+  }
+
+  // 指定されたtableIdを持つテーブルを探す
+  const table = data.data.items.find((t) => t.table_id === cleanTableId);
+  if (!table) {
+    throw new Error(`Table not found: ${cleanTableId}`);
   }
 
   return {
-    tableId: data.data.table.table_id,
-    name: data.data.table.name,
-    revision: data.data.table.revision,
+    tableId: table.table_id,
+    name: table.name,
+    revision: table.revision,
   };
 }
 
