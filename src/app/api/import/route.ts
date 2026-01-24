@@ -9,6 +9,7 @@ import {
   normalizeFieldName,
   createFieldNameMapping,
   notifyImportError,
+  notifyGeneralError,
 } from '@/lib/lark';
 
 // Lark Base フィールド型のマッピング
@@ -39,9 +40,13 @@ interface ImportRequest {
 }
 
 export async function POST(request: NextRequest) {
+  // エラー通知用にレコードを保存
+  let savedRecords: Array<Record<string, unknown>> | undefined;
+
   try {
     const body: ImportRequest = await request.json();
     const { records, fieldTypes } = body;
+    savedRecords = records; // エラー通知用に保存
     // 環境変数の改行をトリム
     const appToken = (body.appToken || '').trim();
     const tableId = (body.tableId || '').trim();
@@ -211,6 +216,15 @@ export async function POST(request: NextRequest) {
 
     const message =
       error instanceof Error ? error.message : '不明なエラーが発生しました';
+
+    // 通知先が設定されている場合、エラーを通知
+    const notifyChatId = process.env.NOTIFY_CHAT_ID;
+    if (notifyChatId) {
+      // 非同期で通知（レスポンスを遅延させない）
+      notifyGeneralError(notifyChatId, message, savedRecords).catch((err) => {
+        console.error('Failed to send error notification:', err);
+      });
+    }
 
     return NextResponse.json(
       { error: message, success: false },

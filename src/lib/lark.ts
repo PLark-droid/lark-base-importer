@@ -872,3 +872,50 @@ ${JSON.stringify(recordsPreview, null, 2).slice(0, 2000)}${failedRecords.length 
     console.error('Failed to notify import error:', error);
   }
 }
+
+/**
+ * 一般的なエラー発生時にグループチャットに通知を送信
+ * トークン取得からエラーまで、全てのエラーに対応
+ * @param chatId グループチャットID（環境変数 NOTIFY_CHAT_ID から取得）
+ */
+export async function notifyGeneralError(
+  chatId: string,
+  errorMessage: string,
+  records?: Array<Record<string, unknown>>
+): Promise<void> {
+  try {
+    if (!chatId) {
+      console.error('No chat ID provided for notification');
+      return;
+    }
+
+    // トークンを取得（エラー通知のため）
+    let token: string;
+    try {
+      token = await getTenantAccessToken();
+    } catch (tokenError) {
+      console.error('Failed to get token for error notification:', tokenError);
+      return;
+    }
+
+    // メッセージを構築
+    let message = `🚨 インポート処理でエラーが発生しました
+
+エラー: ${errorMessage}`;
+
+    // レコードデータがある場合は追加
+    if (records && records.length > 0) {
+      const recordsPreview = records.slice(0, 3);
+      message += `
+
+レコード数: ${records.length}件
+
+データ（最初の${Math.min(3, records.length)}件）:
+${JSON.stringify(recordsPreview, null, 2).slice(0, 2000)}${records.length > 3 ? '\n...(以下省略)' : ''}`;
+    }
+
+    await sendMessageToChat(token, chatId, message);
+  } catch (error) {
+    console.error('Failed to notify general error:', error);
+  }
+}
