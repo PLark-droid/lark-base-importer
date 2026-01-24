@@ -1,7 +1,7 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
-import { ParsedFile, ParsedRecord } from './JsonUploader';
+import { useMemo, useState } from 'react';
+import { ParsedFile } from './JsonUploader';
 
 export interface ImportProgress {
   current: number;
@@ -145,16 +145,19 @@ export default function FieldPreview({
   }, [fieldNames, allRecords]);
 
   // Lark型の選択状態を管理
-  const [selectedTypes, setSelectedTypes] = useState<FieldTypeMapping>({});
-
-  // 初期値を設定（推論された型からLark型へ変換）
-  useEffect(() => {
+  // 初期値は推論された型からLark型へ変換し、未設定のフィールドがあれば追加
+  const [selectedTypes, setSelectedTypes] = useState<FieldTypeMapping>(() => {
     const initial: FieldTypeMapping = {};
     fieldNames.forEach((name) => {
       initial[name] = inferredTypeToLarkType(inferredTypes[name]);
     });
-    setSelectedTypes(initial);
-  }, [fieldNames, inferredTypes]);
+    return initial;
+  });
+
+  // 選択された型を取得（未設定のフィールドはデフォルト値を返す）
+  const getSelectedType = (name: string): LarkFieldType => {
+    return selectedTypes[name] || inferredTypeToLarkType(inferredTypes[name]);
+  };
 
   const handleTypeChange = (fieldName: string, newType: LarkFieldType) => {
     setSelectedTypes((prev) => ({
@@ -189,7 +192,14 @@ export default function FieldPreview({
             キャンセル
           </button>
           <button
-            onClick={() => onConfirm(selectedTypes)}
+            onClick={() => {
+              // すべてのフィールドの型を含む完全なマッピングを作成
+              const allTypes: FieldTypeMapping = {};
+              fieldNames.forEach((name) => {
+                allTypes[name] = getSelectedType(name);
+              });
+              onConfirm(allTypes);
+            }}
             disabled={isLoading || isImporting || isCompleted}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
           >
@@ -299,7 +309,7 @@ export default function FieldPreview({
                   </td>
                   <td className="px-3 py-1.5">
                     <select
-                      value={selectedTypes[name] || 'text'}
+                      value={getSelectedType(name)}
                       onChange={(e) => handleTypeChange(name, e.target.value as LarkFieldType)}
                       disabled={isImporting}
                       className="w-full text-xs px-2 py-1 border border-gray-300 rounded bg-white text-gray-800 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"

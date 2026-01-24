@@ -1,11 +1,17 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import JsonUploader, { ParsedFile } from '@/components/JsonUploader';
 import FieldPreview, { ImportProgress, FieldTypeMapping } from '@/components/FieldPreview';
-import { parseLarkBaseUrl, LarkBaseUrlInfo } from '@/lib/lark';
+import FieldValidation, { FieldMappingDecision, ExistingField } from '@/components/FieldValidation';
+import { parseLarkBaseUrl, LarkBaseUrlInfo, validateFieldsAgainstExisting, FieldValidationResult } from '@/lib/lark';
 
-type Step = 'upload' | 'preview' | 'success';
+type Step = 'upload' | 'validation' | 'preview' | 'success';
+
+// 環境変数から固定URL情報を取得
+const DEFAULT_APP_TOKEN = process.env.NEXT_PUBLIC_DEFAULT_APP_TOKEN;
+const DEFAULT_TABLE_ID = process.env.NEXT_PUBLIC_DEFAULT_TABLE_ID;
+const isUrlFixed = !!(DEFAULT_APP_TOKEN && DEFAULT_TABLE_ID);
 
 interface ImportSummary {
   totalRecords: number;
@@ -31,6 +37,61 @@ export default function Home() {
   });
   const [summary, setSummary] = useState<ImportSummary | null>(null);
 
+  // フィールドバリデーション関連の状態
+  const [existingFields, setExistingFields] = useState<ExistingField[]>([]);
+  const [validationResult, setValidationResult] = useState<FieldValidationResult | null>(null);
+  const [fieldMappingDecision, setFieldMappingDecision] = useState<FieldMappingDecision | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
+
+  // Base情報（固定モード用）
+  const [baseInfo, setBaseInfo] = useState<{ appName: string; tableName: string } | null>(null);
+  const [isLoadingBaseInfo, setIsLoadingBaseInfo] = useState(false);
+  const [baseInfoError, setBaseInfoError] = useState(false);
+
+  // 環境変数で固定されている場合、初期化時にurlInfoを設定
+  useEffect(() => {
+    if (isUrlFixed && DEFAULT_APP_TOKEN && DEFAULT_TABLE_ID) {
+      setUrlInfo({
+        appToken: DEFAULT_APP_TOKEN,
+        tableId: DEFAULT_TABLE_ID,
+      });
+    }
+  }, []);
+
+  // Base情報を取得（固定モード時）- 一度だけ実行
+  useEffect(() => {
+    if (isUrlFixed && urlInfo && !baseInfo && !isLoadingBaseInfo && !baseInfoError) {
+      setIsLoadingBaseInfo(true);
+      fetch('/api/app-info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          appToken: urlInfo.appToken,
+          tableId: urlInfo.tableId,
+        }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success && data.data) {
+            setBaseInfo({
+              appName: data.data.appName,
+              tableName: data.data.tableName,
+            });
+          } else {
+            console.error('Failed to fetch base info:', data.error);
+            setBaseInfoError(true);
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to fetch base info:', err);
+          setBaseInfoError(true);
+        })
+        .finally(() => {
+          setIsLoadingBaseInfo(false);
+        });
+    }
+  }, [isUrlFixed, urlInfo, baseInfo, isLoadingBaseInfo, baseInfoError]);
+
   const handleUrlChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const url = e.target.value;
     setLarkUrl(url);
@@ -54,7 +115,7 @@ export default function Home() {
     setParsedFiles(files);
   }, []);
 
-  const handleProceedToPreview = useCallback(() => {
+  const handleProceedToValidation = useCallback(async () => {
     const validFiles = parsedFiles.filter(
       (f) => f.status !== 'error' && f.records.length > 0
     );
@@ -67,11 +128,64 @@ export default function Home() {
       return;
     }
     setError(null);
-    setStep('preview');
+    setIsValidating(true);
+
+    try {
+      // 既存フィールドを取得
+      const response = await fetch('/api/fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          appToken: urlInfo.appToken,
+          tableId: urlInfo.tableId,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        setError(data.error || '既存フィールドの取得に失敗しました');
+        setIsValidating(false);
+        return;
+      }
+
+      const fields: ExistingField[] = data.data.fields;
+      setExistingFields(fields);
+
+      // JSONからフィールド名を収集
+      const allJsonFields = new Set<string>();
+      validFiles.forEach((f) => {
+        f.records.forEach((r) => {
+          Object.keys(r.data).forEach((key) => allJsonFields.add(key));
+        });
+      });
+
+      // バリデーション実行
+      const result = validateFieldsAgainstExisting(
+        Array.from(allJsonFields),
+        fields.map((f) => ({ field_name: f.field_name, normalized_name: f.normalized_name }))
+      );
+      setValidationResult(result);
+      setStep('validation');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'バリデーションに失敗しました');
+    } finally {
+      setIsValidating(false);
+    }
   }, [parsedFiles, urlInfo]);
 
-  const handleCancel = () => {
+  const handleValidationApprove = useCallback((decision: FieldMappingDecision) => {
+    setFieldMappingDecision(decision);
+    setStep('preview');
+  }, []);
+
+  const handleValidationCancel = useCallback(() => {
     setStep('upload');
+    setValidationResult(null);
+    setExistingFields([]);
+  }, []);
+
+  const handleCancel = () => {
+    setStep('validation');
     setError(null);
     setImportProgress({
       current: 0,
@@ -92,11 +206,40 @@ export default function Home() {
     const validFiles = parsedFiles.filter(
       (f) => f.status !== 'error' && f.records.length > 0
     );
+
+    // フィールドマッピング決定に基づいてレコードを変換
+    // シンプル化: 類似フィールドのマッピングのみ適用し、それ以外はすべて通す
+    const transformRecord = (data: Record<string, unknown>): Record<string, unknown> => {
+      const transformed: Record<string, unknown> = {};
+
+      for (const [key, value] of Object.entries(data)) {
+        // 類似フィールドのマッピングをチェック
+        if (fieldMappingDecision?.similarMappings.has(key)) {
+          const mappedField = fieldMappingDecision.similarMappings.get(key);
+          if (mappedField !== null && mappedField !== undefined) {
+            // 既存フィールドにマッピング
+            transformed[mappedField] = value;
+          } else {
+            // null = 新規作成
+            transformed[key] = value;
+          }
+        } else {
+          // それ以外はすべてそのまま通す
+          transformed[key] = value;
+        }
+      }
+
+      return transformed;
+    };
+
     // 各レコードに元のJSONを丸ごと格納するフィールドを追加
-    const allRecords = validFiles.flatMap((f) => f.records.map((r) => ({
-      ...r.data,
-      _raw_json: JSON.stringify(r.data, null, 2),
-    })));
+    const allRecords = validFiles.flatMap((f) => f.records.map((r) => {
+      const transformed = transformRecord(r.data);
+      return {
+        ...transformed,
+        _raw_json: JSON.stringify(r.data, null, 2),
+      };
+    }));
 
     if (allRecords.length === 0) {
       setError('インポートするレコードがありません');
@@ -175,6 +318,12 @@ export default function Home() {
       });
 
       try {
+        // デバッグ: バッチの最初のレコードをログ出力
+        console.log(`Batch ${i / batchSize + 1}: Sending ${batch.length} records`);
+        if (batch.length > 0) {
+          console.log('First record keys:', Object.keys(batch[0]));
+        }
+
         const response = await fetch('/api/import', {
           method: 'POST',
           headers: {
@@ -189,13 +338,16 @@ export default function Home() {
         });
 
         const data = await response.json();
+        console.log('API Response:', { status: response.status, success: data.success, error: data.error, failedCount: data.data?.failedCount });
 
         if (!response.ok || !data.success) {
-          // Handle batch failure
+          // Handle batch failure - より詳細なエラーメッセージを表示
+          const errorMsg = data.error || data.data?.errors?.[0]?.error || 'インポートに失敗しました';
+          console.error('Import failed:', errorMsg);
           for (let j = 0; j < batch.length; j++) {
             errors.push({
               index: i + j,
-              error: data.error || 'インポートに失敗しました',
+              error: errorMsg,
             });
           }
           failedCount += batch.length;
@@ -237,10 +389,12 @@ export default function Home() {
     }
 
     // Update file statuses based on results
+    // Note: インポート失敗でもファイルステータスは 'success' にしないと
+    // validFileCount が 0 になってしまうため、'completed' として扱う
     setParsedFiles((prev) =>
       prev.map((f) =>
-        f.status === 'processing'
-          ? { ...f, status: failedCount === 0 ? 'success' : 'error' }
+        f.status === 'processing' || f.status === 'pending'
+          ? { ...f, status: 'success' as const }
           : f
       )
     );
@@ -278,6 +432,9 @@ export default function Home() {
       errors: [],
     });
     setSummary(null);
+    setExistingFields([]);
+    setValidationResult(null);
+    setFieldMappingDecision(null);
   };
 
   const validFileCount = parsedFiles.filter(
@@ -317,7 +474,22 @@ export default function Home() {
             </div>
             <span className="text-sm text-gray-600">入力</span>
           </div>
-          <div className="w-12 h-0.5 bg-gray-300 mx-2" />
+          <div className="w-8 h-0.5 bg-gray-300 mx-1" />
+          <div className="flex items-center gap-2">
+            <div
+              className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+                step === 'validation'
+                  ? 'bg-blue-600 text-white'
+                  : step === 'preview' || step === 'success'
+                  ? 'bg-green-500 text-white'
+                  : 'bg-gray-300 text-gray-500'
+              }`}
+            >
+              {step === 'preview' || step === 'success' ? '✓' : '2'}
+            </div>
+            <span className="text-sm text-gray-600">検証</span>
+          </div>
+          <div className="w-8 h-0.5 bg-gray-300 mx-1" />
           <div className="flex items-center gap-2">
             <div
               className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
@@ -328,11 +500,11 @@ export default function Home() {
                   : 'bg-gray-300 text-gray-500'
               }`}
             >
-              {step === 'success' ? '✓' : '2'}
+              {step === 'success' ? '✓' : '3'}
             </div>
             <span className="text-sm text-gray-600">確認</span>
           </div>
-          <div className="w-12 h-0.5 bg-gray-300 mx-2" />
+          <div className="w-8 h-0.5 bg-gray-300 mx-1" />
           <div className="flex items-center gap-2">
             <div
               className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
@@ -341,7 +513,7 @@ export default function Home() {
                   : 'bg-gray-300 text-gray-500'
               }`}
             >
-              {step === 'success' ? '✓' : '3'}
+              {step === 'success' ? '✓' : '4'}
             </div>
             <span className="text-sm text-gray-600">完了</span>
           </div>
@@ -351,36 +523,60 @@ export default function Home() {
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
           {step === 'upload' && (
             <div className="space-y-6">
-              {/* Lark Base URL Input */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Lark Base URL
-                </label>
-                <input
-                  type="text"
-                  value={larkUrl}
-                  onChange={handleUrlChange}
-                  placeholder="https://xxx.larksuite.com/base/bascnXXX?table=tblXXX"
-                  className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white text-gray-900 placeholder-gray-400 ${
-                    urlError ? 'border-red-300' : 'border-gray-300'
-                  }`}
-                />
-                {urlError && (
-                  <p className="text-xs text-red-500 mt-2">{urlError}</p>
-                )}
-                {urlInfo && (
-                  <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-lg">
-                    <p className="text-xs text-green-700">
-                      <span className="font-medium">App Token:</span> {urlInfo.appToken}
-                      <span className="mx-2">|</span>
-                      <span className="font-medium">Table ID:</span> {urlInfo.tableId}
+              {/* Lark Base URL Input - 環境変数で固定されていない場合のみ表示 */}
+              {!isUrlFixed ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Lark Base URL
+                  </label>
+                  <input
+                    type="text"
+                    value={larkUrl}
+                    onChange={handleUrlChange}
+                    placeholder="https://xxx.larksuite.com/base/bascnXXX?table=tblXXX"
+                    className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white text-gray-900 placeholder-gray-400 ${
+                      urlError ? 'border-red-300' : 'border-gray-300'
+                    }`}
+                  />
+                  {urlError && (
+                    <p className="text-xs text-red-500 mt-2">{urlError}</p>
+                  )}
+                  {urlInfo && (
+                    <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-lg">
+                      <p className="text-xs text-green-700">
+                        <span className="font-medium">App Token:</span> {urlInfo.appToken}
+                        <span className="mx-2">|</span>
+                        <span className="font-medium">Table ID:</span> {urlInfo.tableId}
+                      </p>
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-500 mt-2">
+                    インポート先のLark Baseテーブルを開き、URLをコピーして貼り付けてください
+                  </p>
+                </div>
+              ) : (
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <h3 className="text-sm font-medium text-blue-800 mb-2">インポート先（固定）</h3>
+                  {isLoadingBaseInfo ? (
+                    <p className="text-sm text-blue-600">読み込み中...</p>
+                  ) : baseInfo ? (
+                    <div className="space-y-1">
+                      <p className="text-sm text-blue-700">
+                        <span className="font-medium">Base:</span> {baseInfo.appName}
+                      </p>
+                      <p className="text-sm text-blue-700">
+                        <span className="font-medium">テーブル:</span> {baseInfo.tableName}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-blue-700">
+                      <span className="font-medium">App Token:</span> {urlInfo?.appToken}
+                      <span className="mx-3">|</span>
+                      <span className="font-medium">Table ID:</span> {urlInfo?.tableId}
                     </p>
-                  </div>
-                )}
-                <p className="text-xs text-gray-500 mt-2">
-                  インポート先のLark Baseテーブルを開き、URLをコピーして貼り付けてください
-                </p>
-              </div>
+                  )}
+                </div>
+              )}
 
               {/* Divider */}
               <div className="border-t border-gray-200 pt-6">
@@ -402,17 +598,75 @@ export default function Home() {
               {parsedFiles.length > 0 && (
                 <div className="pt-4 border-t border-gray-200">
                   <button
-                    onClick={handleProceedToPreview}
-                    disabled={validFileCount === 0 || !urlInfo}
+                    onClick={handleProceedToValidation}
+                    disabled={validFileCount === 0 || !urlInfo || isValidating}
                     className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
                   >
-                    プレビューへ進む
-                    <span className="text-sm opacity-80">
-                      ({validFileCount}ファイル / {totalRecordCount}レコード)
-                    </span>
+                    {isValidating ? (
+                      <>
+                        <span className="animate-spin">⏳</span>
+                        フィールドを検証中...
+                      </>
+                    ) : (
+                      <>
+                        フィールドを検証
+                        <span className="text-sm opacity-80">
+                          ({validFileCount}ファイル / {totalRecordCount}レコード)
+                        </span>
+                      </>
+                    )}
                   </button>
                 </div>
               )}
+            </div>
+          )}
+
+          {step === 'validation' && validationResult && (
+            <div className="space-y-6">
+              {/* Import Target Info */}
+              {urlInfo && (
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <h3 className="text-sm font-medium text-blue-800 mb-2">インポート先</h3>
+                  {baseInfo ? (
+                    <div className="space-y-1">
+                      <p className="text-sm text-blue-700">
+                        <span className="font-medium">Base:</span> {baseInfo.appName}
+                        <span className="mx-3">|</span>
+                        <span className="font-medium">テーブル:</span> {baseInfo.tableName}
+                      </p>
+                      <p className="text-xs text-blue-600">
+                        既存フィールド: {existingFields.length}件
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-sm text-blue-700">
+                        <span className="font-medium">App Token:</span> {urlInfo.appToken}
+                        <span className="mx-3">|</span>
+                        <span className="font-medium">Table ID:</span> {urlInfo.tableId}
+                      </p>
+                      <p className="text-xs text-blue-600 mt-1">
+                        既存フィールド: {existingFields.length}件
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {error && (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+                  <p className="text-red-600 text-sm">{error}</p>
+                </div>
+              )}
+
+              <FieldValidation
+                exactMatches={validationResult.exactMatches}
+                similarMatches={validationResult.similarMatches}
+                newFields={validationResult.newFields}
+                onApprove={handleValidationApprove}
+                onCancel={handleValidationCancel}
+                isLoading={isValidating}
+              />
             </div>
           )}
 
@@ -422,11 +676,19 @@ export default function Home() {
               {urlInfo && (
                 <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
                   <h3 className="text-sm font-medium text-blue-800 mb-2">インポート先</h3>
-                  <p className="text-sm text-blue-700">
-                    <span className="font-medium">App Token:</span> {urlInfo.appToken}
-                    <span className="mx-3">|</span>
-                    <span className="font-medium">Table ID:</span> {urlInfo.tableId}
-                  </p>
+                  {baseInfo ? (
+                    <p className="text-sm text-blue-700">
+                      <span className="font-medium">Base:</span> {baseInfo.appName}
+                      <span className="mx-3">|</span>
+                      <span className="font-medium">テーブル:</span> {baseInfo.tableName}
+                    </p>
+                  ) : (
+                    <p className="text-sm text-blue-700">
+                      <span className="font-medium">App Token:</span> {urlInfo.appToken}
+                      <span className="mx-3">|</span>
+                      <span className="font-medium">Table ID:</span> {urlInfo.tableId}
+                    </p>
+                  )}
                 </div>
               )}
 

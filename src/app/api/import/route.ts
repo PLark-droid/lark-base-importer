@@ -8,6 +8,7 @@ import {
   BatchCreateResult,
   normalizeFieldName,
   createFieldNameMapping,
+  notifyImportError,
 } from '@/lib/lark';
 
 // Lark Base フィールド型のマッピング
@@ -40,7 +41,10 @@ interface ImportRequest {
 export async function POST(request: NextRequest) {
   try {
     const body: ImportRequest = await request.json();
-    const { records, appToken, tableId, fieldTypes } = body;
+    const { records, fieldTypes } = body;
+    // 環境変数の改行をトリム
+    const appToken = (body.appToken || '').trim();
+    const tableId = (body.tableId || '').trim();
 
     // バリデーション
     if (!records || !Array.isArray(records) || records.length === 0) {
@@ -84,6 +88,22 @@ export async function POST(request: NextRequest) {
       existingFields.map((f) => normalizeFieldName(f.field_name))
     );
 
+    // URL型フィールド（type: 15）のフィールド名を収集
+    const urlFieldNames = new Set<string>(
+      existingFields.filter((f) => f.type === 15).map((f) => f.field_name)
+    );
+    if (urlFieldNames.size > 0) {
+      console.log('URL type fields detected:', Array.from(urlFieldNames));
+    }
+
+    // 数値型フィールド（type: 2）のフィールド名を収集
+    const numberFieldNames = new Set<string>(
+      existingFields.filter((f) => f.type === 2).map((f) => f.field_name)
+    );
+    if (numberFieldNames.size > 0) {
+      console.log('Number type fields detected:', Array.from(numberFieldNames));
+    }
+
     // 4. 全レコードから一意のフィールド名を収集
     const allFieldNames = new Set<string>();
     records.forEach((record) => {
@@ -120,6 +140,14 @@ export async function POST(request: NextRequest) {
         try {
           await createField(token, appToken, tableId, fieldName, fieldType);
           console.log(`Created field: ${fieldName} (type: ${fieldType})`);
+          // 新しく作成されたURL型フィールドもurlFieldNamesに追加
+          if (fieldType === 15) {
+            urlFieldNames.add(fieldName);
+          }
+          // 新しく作成された数値型フィールドもnumberFieldNamesに追加
+          if (fieldType === 2) {
+            numberFieldNames.add(fieldName);
+          }
         } catch (error) {
           console.error(`Failed to create field: ${fieldName}`, error);
           throw error;
@@ -127,14 +155,35 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 6. バッチでレコードを追加（フィールド名マッピングを適用）
+    // 6. バッチでレコードを追加（フィールド名マッピングと型変換を適用）
     const result: BatchCreateResult = await batchCreateRecords(
       token,
       appToken,
       tableId,
       records,
-      fieldMapping
+      fieldMapping,
+      urlFieldNames,
+      numberFieldNames
     );
+
+    // エラーがある場合は詳細を表示し、通知を送信
+    if (result.failedCount > 0 && result.errors.length > 0) {
+      console.log('Import completed with errors:', result.errors.slice(0, 5));
+
+      // 通知先が設定されている場合、Larkグループチャットで通知
+      const notifyChatId = process.env.NOTIFY_CHAT_ID;
+      if (notifyChatId) {
+        // 失敗したレコードのインデックスからレコードを取得
+        const failedIndices = result.errors.map((e) => e.index);
+        const failedRecords = failedIndices.map((idx) => records[idx]).filter(Boolean);
+        const errorMessage = result.errors[0]?.error || 'Unknown error';
+
+        // 非同期で通知（レスポンスを遅延させない）
+        notifyImportError(token, notifyChatId, errorMessage, failedRecords).catch((err) => {
+          console.error('Failed to send notification:', err);
+        });
+      }
+    }
 
     return NextResponse.json({
       success: result.failedCount === 0,
@@ -142,6 +191,10 @@ export async function POST(request: NextRequest) {
         result.failedCount === 0
           ? 'インポートが完了しました'
           : `${result.successCount}件成功、${result.failedCount}件失敗`,
+      // エラーの場合もerrorフィールドを設定
+      error: result.failedCount > 0 && result.errors.length > 0
+        ? result.errors[0].error
+        : undefined,
       data: {
         tableId,
         totalRecords: records.length,

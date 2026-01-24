@@ -145,6 +145,75 @@ export function createFieldNameMapping(
 }
 
 /**
+ * フィールドバリデーション結果の型定義
+ */
+export interface FieldValidationResult {
+  // 完全一致（既存フィールドにそのまま格納）
+  exactMatches: Array<{
+    jsonField: string;
+    existingField: string;
+  }>;
+  // 類似一致（正規化後に一致、確認が必要）
+  similarMatches: Array<{
+    jsonField: string;
+    existingField: string;
+    normalizedName: string;
+  }>;
+  // 新規フィールド（既存にない、追加承認が必要）
+  newFields: string[];
+}
+
+/**
+ * JSONフィールドと既存フィールドを比較してバリデーション結果を返す
+ */
+export function validateFieldsAgainstExisting(
+  jsonFields: string[],
+  existingFields: Array<{ field_name: string; normalized_name: string }>
+): FieldValidationResult {
+  const result: FieldValidationResult = {
+    exactMatches: [],
+    similarMatches: [],
+    newFields: [],
+  };
+
+  // 既存フィールドのマップを作成
+  const exactMap = new Map<string, string>();
+  const normalizedMap = new Map<string, string>();
+
+  for (const field of existingFields) {
+    exactMap.set(field.field_name, field.field_name);
+    normalizedMap.set(field.normalized_name, field.field_name);
+  }
+
+  for (const jsonField of jsonFields) {
+    const normalizedJsonField = normalizeFieldName(jsonField);
+
+    // 完全一致チェック
+    if (exactMap.has(jsonField)) {
+      result.exactMatches.push({
+        jsonField,
+        existingField: jsonField,
+      });
+    }
+    // 正規化後に一致（類似）チェック
+    else if (normalizedMap.has(normalizedJsonField)) {
+      const existingField = normalizedMap.get(normalizedJsonField)!;
+      result.similarMatches.push({
+        jsonField,
+        existingField,
+        normalizedName: normalizedJsonField,
+      });
+    }
+    // 新規フィールド
+    else {
+      result.newFields.push(jsonField);
+    }
+  }
+
+  return result;
+}
+
+/**
  * JSONフィールドを既存フィールド名にマッピング
  */
 export function mapFieldsToExisting(
@@ -162,21 +231,45 @@ export function mapFieldsToExisting(
 }
 
 /**
+ * 安全にJSONをパースする（非JSON応答時にわかりやすいエラーを返す）
+ */
+async function safeJsonParse<T>(res: Response, context: string): Promise<T> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch (e) {
+    console.error(`${context}: Failed to parse JSON response`, {
+      httpStatus: res.status,
+      responsePreview: text.substring(0, 200),
+    });
+    throw new Error(`${context}: Invalid JSON response (HTTP ${res.status}). Preview: ${text.substring(0, 100)}`);
+  }
+}
+
+/**
  * Tenant Access Token を取得
  */
 export async function getTenantAccessToken(): Promise<string> {
+  // 環境変数をトリムして使用
+  const appId = (process.env.LARK_APP_ID || '').trim();
+  const appSecret = (process.env.LARK_APP_SECRET || '').trim();
+
+  if (!appId || !appSecret) {
+    throw new Error('LARK_APP_ID or LARK_APP_SECRET is not configured');
+  }
+
   const res = await fetch(`${LARK_API_BASE}/auth/v3/tenant_access_token/internal`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      app_id: process.env.LARK_APP_ID,
-      app_secret: process.env.LARK_APP_SECRET,
+      app_id: appId,
+      app_secret: appSecret,
     }),
   });
 
-  const data: LarkTokenResponse = await res.json();
+  const data = await safeJsonParse<LarkTokenResponse>(res, 'getTenantAccessToken');
 
   if (data.code !== 0 || !data.tenant_access_token) {
     throw new Error(`Failed to get token: ${data.msg}`);
@@ -266,8 +359,12 @@ export async function getTableFields(
   appToken: string,
   tableId: string
 ): Promise<Array<{ field_id: string; field_name: string; type: number }>> {
+  // appTokenとtableIdをトリム
+  const cleanAppToken = appToken.trim();
+  const cleanTableId = tableId.trim();
+
   const res = await fetch(
-    `${LARK_API_BASE}/bitable/v1/apps/${appToken}/tables/${tableId}/fields`,
+    `${LARK_API_BASE}/bitable/v1/apps/${cleanAppToken}/tables/${cleanTableId}/fields`,
     {
       method: 'GET',
       headers: {
@@ -276,7 +373,7 @@ export async function getTableFields(
     }
   );
 
-  const data: LarkFieldListResponse = await res.json();
+  const data = await safeJsonParse<LarkFieldListResponse>(res, 'getTableFields');
 
   if (data.code !== 0 || !data.data?.items) {
     console.error('Failed to get fields:', {
@@ -300,8 +397,12 @@ export async function createField(
   fieldName: string,
   fieldType: number
 ): Promise<string> {
+  // appTokenとtableIdをトリム
+  const cleanAppToken = appToken.trim();
+  const cleanTableId = tableId.trim();
+
   const res = await fetch(
-    `${LARK_API_BASE}/bitable/v1/apps/${appToken}/tables/${tableId}/fields`,
+    `${LARK_API_BASE}/bitable/v1/apps/${cleanAppToken}/tables/${cleanTableId}/fields`,
     {
       method: 'POST',
       headers: {
@@ -315,7 +416,7 @@ export async function createField(
     }
   );
 
-  const data: LarkCreateFieldResponse = await res.json();
+  const data = await safeJsonParse<LarkCreateFieldResponse>(res, 'createField');
 
   if (data.code !== 0 || !data.data?.field.field_id) {
     console.error('Failed to create field:', {
@@ -341,13 +442,17 @@ export async function addRecord(
   fields: Record<string, unknown>
 ): Promise<string> {
   // 値の変換（配列やオブジェクトはJSON文字列に）
+  // 空の値はスキップ（URL型フィールドなどのエラー防止）
   const processedFields: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(fields)) {
+    // 空の値はスキップ
+    if (value === null || value === undefined || value === '') {
+      continue;
+    }
+
     if (Array.isArray(value) || (typeof value === 'object' && value !== null)) {
       processedFields[key] = JSON.stringify(value);
-    } else if (value === null || value === undefined) {
-      processedFields[key] = '';
     } else {
       processedFields[key] = value;
     }
@@ -383,12 +488,32 @@ export async function addRecord(
 }
 
 /**
+ * URLが有効かどうかを検証
+ */
+function isValidUrl(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  if (!value.trim()) return false;
+  try {
+    const url = new URL(value);
+    // http または https プロトコルのみ許可
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * レコードのフィールド値を処理（配列やオブジェクトはJSON文字列に）
  * オプションでフィールド名マッピングを適用
+ * 空の値（null, undefined, 空文字列）はスキップ（URL型フィールドなどのエラー防止）
+ * URL型フィールドの無効な値もスキップ
+ * 数値型フィールド以外は文字列に変換（TextFieldConvFail防止）
  */
 function processFieldValues(
   fields: Record<string, unknown>,
-  fieldMapping?: Map<string, string>
+  fieldMapping?: Map<string, string>,
+  urlFieldNames?: Set<string>,
+  numberFieldNames?: Set<string>
 ): Record<string, unknown> {
   const processed: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(fields)) {
@@ -399,12 +524,43 @@ function processFieldValues(
       actualKey = fieldMapping.get(normalizedKey) || key;
     }
 
+    // 空の値はスキップ（URL型フィールドに空文字を送るとエラーになるため）
+    if (value === null || value === undefined || value === '') {
+      continue;
+    }
+
+    // URL型フィールドの場合、Lark APIの特殊な形式に変換
+    // Lark Base APIのURL型フィールドは { link: "url", text: "表示テキスト" } 形式が必要
+    if (urlFieldNames && urlFieldNames.has(actualKey)) {
+      if (!isValidUrl(value)) {
+        console.log(`Skipping invalid URL value for field "${actualKey}": ${value}`);
+        continue;
+      }
+      // 有効なURLの場合、Lark APIの形式に変換
+      processed[actualKey] = {
+        link: String(value),
+        text: String(value),
+      };
+      continue;
+    }
+
+    // 数値型フィールドの場合、数値として送信
+    if (numberFieldNames && numberFieldNames.has(actualKey)) {
+      if (typeof value === 'number') {
+        processed[actualKey] = value;
+      } else if (typeof value === 'string' && !isNaN(Number(value)) && value.trim() !== '') {
+        processed[actualKey] = Number(value);
+      }
+      // 数値に変換できない場合はスキップ
+      continue;
+    }
+
+    // それ以外のフィールドは文字列に変換（TextFieldConvFail防止）
     if (Array.isArray(value) || (typeof value === 'object' && value !== null)) {
       processed[actualKey] = JSON.stringify(value);
-    } else if (value === null || value === undefined) {
-      processed[actualKey] = '';
     } else {
-      processed[actualKey] = value;
+      // 数値やbooleanも文字列に変換
+      processed[actualKey] = String(value);
     }
   }
   return processed;
@@ -413,14 +569,22 @@ function processFieldValues(
 /**
  * 複数レコードをバッチで追加（最大500レコード/リクエスト）
  * fieldMappingを指定すると、JSONフィールド名を既存フィールド名にマッピング
+ * urlFieldNamesを指定すると、URL型フィールドの無効な値をスキップ
+ * numberFieldNamesを指定すると、数値型フィールドは数値として送信
  */
 export async function batchCreateRecords(
   token: string,
   appToken: string,
   tableId: string,
   records: Array<Record<string, unknown>>,
-  fieldMapping?: Map<string, string>
+  fieldMapping?: Map<string, string>,
+  urlFieldNames?: Set<string>,
+  numberFieldNames?: Set<string>
 ): Promise<BatchCreateResult> {
+  // appTokenとtableIdをトリム
+  const cleanAppToken = appToken.trim();
+  const cleanTableId = tableId.trim();
+
   const BATCH_SIZE = 500;
   const result: BatchCreateResult = {
     successCount: 0,
@@ -433,12 +597,12 @@ export async function batchCreateRecords(
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     const batch = records.slice(i, i + BATCH_SIZE);
     const batchRecords = batch.map((fields) => ({
-      fields: processFieldValues(fields, fieldMapping),
+      fields: processFieldValues(fields, fieldMapping, urlFieldNames, numberFieldNames),
     }));
 
     try {
       const res = await fetch(
-        `${LARK_API_BASE}/bitable/v1/apps/${appToken}/tables/${tableId}/records/batch_create`,
+        `${LARK_API_BASE}/bitable/v1/apps/${cleanAppToken}/tables/${cleanTableId}/records/batch_create`,
         {
           method: 'POST',
           headers: {
@@ -449,21 +613,28 @@ export async function batchCreateRecords(
         }
       );
 
-      const data: LarkBatchCreateRecordsResponse = await res.json();
+      const data = await safeJsonParse<LarkBatchCreateRecordsResponse>(res, 'batchCreateRecords');
 
       if (data.code !== 0) {
+        // Lark API エラーの詳細をログ出力
         console.error('Batch create error:', {
           code: data.code,
           msg: data.msg,
           batchStart: i,
           batchSize: batch.length,
+          httpStatus: res.status,
+          // 最初のレコードのフィールド名をログ（デバッグ用）
+          firstRecordFields: batch.length > 0 ? Object.keys(batch[0]) : [],
         });
+
+        // 具体的なエラーメッセージを生成
+        const errorMessage = `Lark API Error: ${data.msg} (code: ${data.code})`;
 
         // Mark all records in this batch as failed
         for (let j = 0; j < batch.length; j++) {
           result.errors.push({
             index: i + j,
-            error: data.msg || 'Unknown error',
+            error: errorMessage,
           });
         }
         result.failedCount += batch.length;
@@ -499,4 +670,198 @@ export async function listBases(token: string): Promise<unknown> {
   });
 
   return res.json();
+}
+
+/**
+ * Base Appの情報を取得
+ */
+export interface AppInfo {
+  appToken: string;
+  name: string;
+  revision: number;
+}
+
+export async function getAppInfo(
+  token: string,
+  appToken: string
+): Promise<AppInfo> {
+  // appTokenをトリム
+  const cleanAppToken = appToken.trim();
+
+  const res = await fetch(
+    `${LARK_API_BASE}/bitable/v1/apps/${cleanAppToken}`,
+    {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    }
+  );
+
+  interface AppInfoResponse {
+    code: number;
+    msg: string;
+    data?: {
+      app: {
+        app_token: string;
+        name: string;
+        revision: number;
+      };
+    };
+  }
+
+  const data = await safeJsonParse<AppInfoResponse>(res, 'getAppInfo');
+
+  if (data.code !== 0 || !data.data?.app) {
+    console.error('Failed to get app info:', {
+      code: data.code,
+      msg: data.msg,
+      httpStatus: res.status,
+    });
+    throw new Error(`Failed to get app info: ${data.msg} (code: ${data.code})`);
+  }
+
+  return {
+    appToken: data.data.app.app_token,
+    name: data.data.app.name,
+    revision: data.data.app.revision,
+  };
+}
+
+/**
+ * テーブルの情報を取得
+ */
+export interface TableInfo {
+  tableId: string;
+  name: string;
+  revision: number;
+}
+
+export async function getTableInfo(
+  token: string,
+  appToken: string,
+  tableId: string
+): Promise<TableInfo> {
+  // appTokenとtableIdをトリム
+  const cleanAppToken = appToken.trim();
+  const cleanTableId = tableId.trim();
+
+  const res = await fetch(
+    `${LARK_API_BASE}/bitable/v1/apps/${cleanAppToken}/tables/${cleanTableId}`,
+    {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    }
+  );
+
+  interface TableInfoResponse {
+    code: number;
+    msg: string;
+    data?: {
+      table: {
+        table_id: string;
+        name: string;
+        revision: number;
+      };
+    };
+  }
+
+  const data = await safeJsonParse<TableInfoResponse>(res, 'getTableInfo');
+
+  if (data.code !== 0 || !data.data?.table) {
+    console.error('Failed to get table info:', {
+      code: data.code,
+      msg: data.msg,
+      httpStatus: res.status,
+    });
+    throw new Error(`Failed to get table info: ${data.msg} (code: ${data.code})`);
+  }
+
+  return {
+    tableId: data.data.table.table_id,
+    name: data.data.table.name,
+    revision: data.data.table.revision,
+  };
+}
+
+/**
+ * グループチャットにメッセージを送信
+ * @param chatId グループチャットID（oc_xxxxx形式）
+ */
+export async function sendMessageToChat(
+  token: string,
+  chatId: string,
+  message: string
+): Promise<boolean> {
+  try {
+    // chatIdをトリム
+    const cleanChatId = chatId.trim();
+
+    const res = await fetch(
+      `${LARK_API_BASE}/im/v1/messages?receive_id_type=chat_id`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          receive_id: cleanChatId,
+          msg_type: 'text',
+          content: JSON.stringify({ text: message }),
+        }),
+      }
+    );
+
+    interface SendMessageResponse {
+      code: number;
+      msg: string;
+    }
+    const data = await safeJsonParse<SendMessageResponse>(res, 'sendMessageToChat');
+    if (data.code !== 0) {
+      console.error('Failed to send message to chat:', data.msg, data.code);
+      return false;
+    }
+
+    console.log('Message sent successfully to chat:', cleanChatId);
+    return true;
+  } catch (error) {
+    console.error('Error sending message to chat:', error);
+    return false;
+  }
+}
+
+/**
+ * インポートエラー時にグループチャットに通知を送信
+ * @param chatId グループチャットID（環境変数 NOTIFY_CHAT_ID から取得）
+ */
+export async function notifyImportError(
+  token: string,
+  chatId: string,
+  errorMessage: string,
+  failedRecords: Array<Record<string, unknown>>
+): Promise<void> {
+  try {
+    if (!chatId) {
+      console.error('No chat ID provided for notification');
+      return;
+    }
+
+    // メッセージを構築（JSONデータは最初の3件まで）
+    const recordsPreview = failedRecords.slice(0, 3);
+    const message = `🚨 インポートエラーが発生しました
+
+エラー: ${errorMessage}
+
+失敗したレコード数: ${failedRecords.length}件
+
+データ（最初の${Math.min(3, failedRecords.length)}件）:
+${JSON.stringify(recordsPreview, null, 2).slice(0, 2000)}${failedRecords.length > 3 ? '\n...(以下省略)' : ''}`;
+
+    await sendMessageToChat(token, chatId, message);
+  } catch (error) {
+    console.error('Failed to notify import error:', error);
+  }
 }
