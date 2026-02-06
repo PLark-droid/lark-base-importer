@@ -41,6 +41,59 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
     return sanitized;
   }, []);
 
+  // JSON文字列値内のエスケープされていないダブルクォートを修復
+  // 例: "日本に"乾杯文化"を根づかせていく" → "日本に\"乾杯文化\"を根づかせていく"
+  const repairJsonQuotes = useCallback((text: string): string => {
+    const result: string[] = [];
+    let i = 0;
+    let inString = false;
+
+    while (i < text.length) {
+      const ch = text[i];
+
+      if (!inString) {
+        result.push(ch);
+        if (ch === '"') {
+          inString = true;
+        }
+        i++;
+      } else {
+        // 文字列内
+        if (ch === '\\') {
+          // エスケープシーケンス: 2文字をそのまま通す
+          result.push(ch);
+          i++;
+          if (i < text.length) {
+            result.push(text[i]);
+            i++;
+          }
+        } else if (ch === '"') {
+          // この " は文字列の終端か、埋め込みクォートか？
+          // 次の非空白文字がJSON構造文字（, } ] :）ならば終端
+          let j = i + 1;
+          while (j < text.length && /\s/.test(text[j])) j++;
+          const nextChar = j < text.length ? text[j] : '';
+
+          if (nextChar === ',' || nextChar === '}' || nextChar === ']' || nextChar === ':' || nextChar === '') {
+            // 文字列の終端
+            result.push(ch);
+            inString = false;
+            i++;
+          } else {
+            // 埋め込みクォート → エスケープ
+            result.push('\\', '"');
+            i++;
+          }
+        } else {
+          result.push(ch);
+          i++;
+        }
+      }
+    }
+
+    return result.join('');
+  }, []);
+
   const parseAndValidateJson = useCallback(
     (content: string, sourceName: string): ParsedFile | null => {
       // Step 1: サニタイズ
@@ -55,16 +108,13 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
         };
       }
 
-      // Step 2: パース試行
+      // Step 2: パース試行（3段階のリトライ付き）
       let parsed: unknown;
       try {
         parsed = JSON.parse(sanitized);
-      } catch (e) {
-        // Step 3: パース失敗時、JSON文字列値内の制御文字をエスケープして再試行
+      } catch (e1) {
+        // Step 3: 制御文字のエスケープで再試行
         try {
-          // 文字列値の中にある生の制御文字（改行、タブ等）をエスケープ
-          // JSON文字列値の中にある生の制御文字をエスケープ
-          // 注: 正規表現で文字列リテラル部分を抽出し、その中の制御文字を変換
           const fixed = sanitized.replace(
             /"(?:[^"\\]|\\.)*"/g,
             (match) => match
@@ -77,22 +127,29 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
           );
           parsed = JSON.parse(fixed);
         } catch {
-          // 最終的にパース失敗
-          const errMsg = e instanceof Error ? e.message : '';
-          const posMatch = errMsg.match(/position (\d+)/);
-          let hint = '';
-          if (posMatch) {
-            const pos = parseInt(posMatch[1]);
-            const around = sanitized.substring(Math.max(0, pos - 20), pos + 20);
-            const charCode = sanitized.charCodeAt(pos);
-            hint = `\n位置${pos}付近: "...${around}..."\n問題の文字コード: U+${charCode.toString(16).padStart(4, '0').toUpperCase()}`;
+          // Step 4: 埋め込みクォートの修復で再試行
+          // 例: "日本に"乾杯文化"を" → "日本に\"乾杯文化\"を"
+          try {
+            const repaired = repairJsonQuotes(sanitized);
+            parsed = JSON.parse(repaired);
+          } catch {
+            // 最終的にパース失敗
+            const errMsg = e1 instanceof Error ? e1.message : '';
+            const posMatch = errMsg.match(/position (\d+)/);
+            let hint = '';
+            if (posMatch) {
+              const pos = parseInt(posMatch[1]);
+              const around = sanitized.substring(Math.max(0, pos - 20), pos + 20);
+              const charCode = sanitized.charCodeAt(pos);
+              hint = `\n位置${pos}付近: "...${around}..."\n問題の文字コード: U+${charCode.toString(16).padStart(4, '0').toUpperCase()}`;
+            }
+            return {
+              fileName: sourceName,
+              records: [],
+              status: 'error',
+              error: `JSONの解析に失敗しました: ${errMsg}${hint}`,
+            };
           }
-          return {
-            fileName: sourceName,
-            records: [],
-            status: 'error',
-            error: `JSONの解析に失敗しました: ${errMsg}${hint}`,
-          };
         }
       }
 
@@ -156,7 +213,7 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
         status: 'pending',
       };
     },
-    [sanitizeJsonText]
+    [sanitizeJsonText, repairJsonQuotes]
   );
 
   const handleFiles = useCallback(
