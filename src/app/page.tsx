@@ -420,7 +420,10 @@ export default function Home() {
     setStep('upload');
     setParsedFiles([]);
     setLarkUrl('');
-    setUrlInfo(null);
+    // 固定URLモードの場合、urlInfoをリセットしない（useEffectが再実行されないため）
+    if (!isUrlFixed) {
+      setUrlInfo(null);
+    }
     setUrlError(null);
     setError(null);
     setImportProgress({
