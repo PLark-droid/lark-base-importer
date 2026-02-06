@@ -28,80 +28,135 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
   const [error, setError] = useState<string | null>(null);
   const [jsonText, setJsonText] = useState('');
 
+  // JSONテキストをサニタイズ（BOM、不可視文字、制御文字を処理）
+  const sanitizeJsonText = useCallback((text: string): string => {
+    let sanitized = text;
+    // BOM（Byte Order Mark）を除去
+    sanitized = sanitized.replace(/^\uFEFF/, '');
+    // 先頭・末尾のゼロ幅スペース・NBSP・通常空白を除去
+    sanitized = sanitized.replace(/^[\s\u200B\u200C\u200D\u200E\u200F\uFEFF\u00A0]+/, '');
+    sanitized = sanitized.replace(/[\s\u200B\u200C\u200D\u200E\u200F\uFEFF\u00A0]+$/, '');
+    // JSON構造部分のゼロ幅文字を除去（文字列値の外側）
+    sanitized = sanitized.replace(/[\u200B\u200C\u200D\u200E\u200F]/g, '');
+    return sanitized;
+  }, []);
+
   const parseAndValidateJson = useCallback(
     (content: string, sourceName: string): ParsedFile | null => {
-      try {
-        const parsed = JSON.parse(content);
+      // Step 1: サニタイズ
+      const sanitized = sanitizeJsonText(content);
 
-        // Handle array of objects
-        if (Array.isArray(parsed)) {
-          if (parsed.length === 0) {
-            return {
-              fileName: sourceName,
-              records: [],
-              status: 'error',
-              error: '空の配列はインポートできません',
-            };
-          }
-
-          const invalidItems = parsed.filter(
-            (item) => typeof item !== 'object' || item === null || Array.isArray(item)
-          );
-          if (invalidItems.length > 0) {
-            return {
-              fileName: sourceName,
-              records: [],
-              status: 'error',
-              error: '配列内のすべての要素はオブジェクトである必要があります',
-            };
-          }
-
-          const records: ParsedRecord[] = parsed.map((item) => ({
-            data: item as Record<string, unknown>,
-            status: 'pending' as const,
-          }));
-
-          return {
-            fileName: sourceName,
-            records,
-            status: 'pending',
-          };
-        }
-
-        // Handle single object
-        if (typeof parsed !== 'object' || parsed === null) {
-          return {
-            fileName: sourceName,
-            records: [],
-            status: 'error',
-            error: 'JSONオブジェクトまたは配列形式で入力してください',
-          };
-        }
-
-        if (Object.keys(parsed).length === 0) {
-          return {
-            fileName: sourceName,
-            records: [],
-            status: 'error',
-            error: '空のJSONオブジェクトはインポートできません',
-          };
-        }
-
-        return {
-          fileName: sourceName,
-          records: [{ data: parsed, status: 'pending' }],
-          status: 'pending',
-        };
-      } catch {
+      if (!sanitized) {
         return {
           fileName: sourceName,
           records: [],
           status: 'error',
-          error: 'JSONの解析に失敗しました。有効なJSON形式か確認してください',
+          error: '入力が空です',
         };
       }
+
+      // Step 2: パース試行
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(sanitized);
+      } catch (e) {
+        // Step 3: パース失敗時、JSON文字列値内の制御文字をエスケープして再試行
+        try {
+          // 文字列値の中にある生の制御文字（改行、タブ等）をエスケープ
+          // JSON文字列値の中にある生の制御文字をエスケープ
+          // 注: 正規表現で文字列リテラル部分を抽出し、その中の制御文字を変換
+          const fixed = sanitized.replace(
+            /"(?:[^"\\]|\\.)*"/g,
+            (match) => match
+              .replace(/\t/g, '\\t')
+              .replace(/\n/g, '\\n')
+              .replace(/\r/g, '\\r')
+              .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, (ch) => {
+                return '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0');
+              })
+          );
+          parsed = JSON.parse(fixed);
+        } catch {
+          // 最終的にパース失敗
+          const errMsg = e instanceof Error ? e.message : '';
+          const posMatch = errMsg.match(/position (\d+)/);
+          let hint = '';
+          if (posMatch) {
+            const pos = parseInt(posMatch[1]);
+            const around = sanitized.substring(Math.max(0, pos - 20), pos + 20);
+            const charCode = sanitized.charCodeAt(pos);
+            hint = `\n位置${pos}付近: "...${around}..."\n問題の文字コード: U+${charCode.toString(16).padStart(4, '0').toUpperCase()}`;
+          }
+          return {
+            fileName: sourceName,
+            records: [],
+            status: 'error',
+            error: `JSONの解析に失敗しました: ${errMsg}${hint}`,
+          };
+        }
+      }
+
+      // Handle array of objects
+      if (Array.isArray(parsed)) {
+        if (parsed.length === 0) {
+          return {
+            fileName: sourceName,
+            records: [],
+            status: 'error',
+            error: '空の配列はインポートできません',
+          };
+        }
+
+        const invalidItems = parsed.filter(
+          (item) => typeof item !== 'object' || item === null || Array.isArray(item)
+        );
+        if (invalidItems.length > 0) {
+          return {
+            fileName: sourceName,
+            records: [],
+            status: 'error',
+            error: '配列内のすべての要素はオブジェクトである必要があります',
+          };
+        }
+
+        const records: ParsedRecord[] = parsed.map((item) => ({
+          data: item as Record<string, unknown>,
+          status: 'pending' as const,
+        }));
+
+        return {
+          fileName: sourceName,
+          records,
+          status: 'pending',
+        };
+      }
+
+      // Handle single object
+      if (typeof parsed !== 'object' || parsed === null) {
+        return {
+          fileName: sourceName,
+          records: [],
+          status: 'error',
+          error: 'JSONオブジェクトまたは配列形式で入力してください',
+        };
+      }
+
+      if (Object.keys(parsed as Record<string, unknown>).length === 0) {
+        return {
+          fileName: sourceName,
+          records: [],
+          status: 'error',
+          error: '空のJSONオブジェクトはインポートできません',
+        };
+      }
+
+      return {
+        fileName: sourceName,
+        records: [{ data: parsed as Record<string, unknown>, status: 'pending' }],
+        status: 'pending',
+      };
     },
-    []
+    [sanitizeJsonText]
   );
 
   const handleFiles = useCallback(
