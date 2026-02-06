@@ -41,6 +41,37 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
     return sanitized;
   }, []);
 
+  // カンマの後ろが有効なJSON継続（キー "key": やオブジェクト/配列の開始等）かチェック
+  const looksLikeJsonAfterComma = useCallback((text: string, pos: number): boolean => {
+    let i = pos;
+    while (i < text.length && /\s/.test(text[i])) i++;
+    if (i >= text.length) return false;
+
+    const ch = text[i];
+    // オブジェクトや配列の開始
+    if (ch === '{' || ch === '[') return true;
+    // 数値
+    if (/[0-9-]/.test(ch)) return true;
+    // true / false / null
+    if (/^(true|false|null)/.test(text.substring(i))) return true;
+    // 文字列: キー（"key":パターン）なら構造的
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < text.length) {
+        if (text[j] === '\\') { j += 2; continue; }
+        if (text[j] === '"') break;
+        j++;
+      }
+      if (j < text.length) {
+        let k = j + 1;
+        while (k < text.length && /\s/.test(text[k])) k++;
+        if (k < text.length && text[k] === ':') return true; // "key": パターン
+      }
+      return false;
+    }
+    return false;
+  }, []);
+
   // JSON文字列値内のエスケープされていないダブルクォートを修復
   // 例: "日本に"乾杯文化"を根づかせていく" → "日本に\"乾杯文化\"を根づかせていく"
   const repairJsonQuotes = useCallback((text: string): string => {
@@ -69,13 +100,19 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
           }
         } else if (ch === '"') {
           // この " は文字列の終端か、埋め込みクォートか？
-          // 次の非空白文字がJSON構造文字（, } ] :）ならば終端
           let j = i + 1;
           while (j < text.length && /\s/.test(text[j])) j++;
           const nextChar = j < text.length ? text[j] : '';
 
-          if (nextChar === ',' || nextChar === '}' || nextChar === ']' || nextChar === ':' || nextChar === '') {
-            // 文字列の終端
+          let isStructural = false;
+          if (nextChar === '' || nextChar === '}' || nextChar === ']' || nextChar === ':') {
+            isStructural = true;
+          } else if (nextChar === ',') {
+            // カンマの場合: その後が有効なJSON構造かチェック
+            isStructural = looksLikeJsonAfterComma(text, j + 1);
+          }
+
+          if (isStructural) {
             result.push(ch);
             inString = false;
             i++;
@@ -92,7 +129,7 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
     }
 
     return result.join('');
-  }, []);
+  }, [looksLikeJsonAfterComma]);
 
   const parseAndValidateJson = useCallback(
     (content: string, sourceName: string): ParsedFile | null => {
