@@ -150,41 +150,47 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
       try {
         parsed = JSON.parse(sanitized);
       } catch (e1) {
-        // Step 3: 制御文字のエスケープで再試行
+        // Step 3: まずクォート修復（埋め込みダブルクォートのエスケープ）
+        // ※制御文字エスケープより先に実行する（regexが未エスケープ"で誤動作するため）
         try {
-          const fixed = sanitized.replace(
-            /"(?:[^"\\]|\\.)*"/g,
-            (match) => match
-              .replace(/\t/g, '\\t')
-              .replace(/\n/g, '\\n')
-              .replace(/\r/g, '\\r')
-              .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, (ch) => {
-                return '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0');
-              })
-          );
-          parsed = JSON.parse(fixed);
+          const repaired = repairJsonQuotes(sanitized);
+          parsed = JSON.parse(repaired);
         } catch {
-          // Step 4: 埋め込みクォートの修復で再試行
-          // 例: "日本に"乾杯文化"を" → "日本に\"乾杯文化\"を"
+          // Step 4: クォート修復 + 制御文字エスケープの組み合わせ
           try {
             const repaired = repairJsonQuotes(sanitized);
-            parsed = JSON.parse(repaired);
-          } catch {
-            // 最終的にパース失敗
+            const fixed = repaired.replace(
+              /"(?:[^"\\]|\\.)*"/g,
+              (match) => match
+                .replace(/\t/g, '\\t')
+                .replace(/\n/g, '\\n')
+                .replace(/\r/g, '\\r')
+                .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, (ch) => {
+                  return '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0');
+                })
+            );
+            parsed = JSON.parse(fixed);
+          } catch (e3) {
+            // 最終的にパース失敗 - 各段階のエラーを表示
             const errMsg = e1 instanceof Error ? e1.message : '';
+            const repairErrMsg = e3 instanceof Error ? e3.message : '';
             const posMatch = errMsg.match(/position (\d+)/);
             let hint = '';
             if (posMatch) {
               const pos = parseInt(posMatch[1]);
-              const around = sanitized.substring(Math.max(0, pos - 20), pos + 20);
+              const around = sanitized.substring(Math.max(0, pos - 30), pos + 30);
               const charCode = sanitized.charCodeAt(pos);
               hint = `\n位置${pos}付近: "...${around}..."\n問題の文字コード: U+${charCode.toString(16).padStart(4, '0').toUpperCase()}`;
             }
+            // 修復後のエラーが異なる場合は追加表示
+            const repairHint = repairErrMsg && repairErrMsg !== errMsg
+              ? `\n修復試行後: ${repairErrMsg}`
+              : '';
             return {
               fileName: sourceName,
               records: [],
               status: 'error',
-              error: `JSONの解析に失敗しました: ${errMsg}${hint}`,
+              error: `JSONの解析に失敗しました: ${errMsg}${hint}${repairHint}`,
             };
           }
         }
