@@ -41,43 +41,64 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
     return sanitized;
   }, []);
 
-  // カンマの後ろが有効なJSON継続（キー "key": やオブジェクト/配列の開始等）かチェック
-  const looksLikeJsonAfterComma = useCallback((text: string, pos: number): boolean => {
+  // カンマの後ろが有効なJSON継続かチェック（コンテキスト依存）
+  // inArray: 現在の文字列が配列内にあるかどうか
+  // - 配列内: "value", "value" は有効（配列要素）
+  // - オブジェクト内: "key": パターンのみ有効
+  const looksLikeJsonAfterComma = useCallback((text: string, pos: number, inArray: boolean): boolean => {
     let i = pos;
     while (i < text.length && /\s/.test(text[i])) i++;
     if (i >= text.length) return false;
 
     const ch = text[i];
-    // オブジェクトや配列の開始
-    if (ch === '{' || ch === '[') return true;
-    // 数値
-    if (/[0-9-]/.test(ch)) return true;
-    // true / false / null
-    if (/^(true|false|null)/.test(text.substring(i))) return true;
-    // 文字列: キー（"key":パターン）なら構造的
-    if (ch === '"') {
-      let j = i + 1;
-      while (j < text.length) {
-        if (text[j] === '\\') { j += 2; continue; }
-        if (text[j] === '"') break;
-        j++;
+
+    if (inArray) {
+      // 配列内: あらゆるJSON値が有効
+      if (ch === '{' || ch === '[') return true;
+      if (/[0-9-]/.test(ch)) return true;
+      if (/^(true|false|null)/.test(text.substring(i))) return true;
+      if (ch === '"') {
+        // 文字列値の場合: 閉じ"の後に , ] } : が来れば有効な配列要素
+        let j = i + 1;
+        while (j < text.length) {
+          if (text[j] === '\\') { j += 2; continue; }
+          if (text[j] === '"') break;
+          j++;
+        }
+        if (j < text.length) {
+          let k = j + 1;
+          while (k < text.length && /\s/.test(text[k])) k++;
+          if (k >= text.length || text[k] === ',' || text[k] === ']' || text[k] === '}' || text[k] === ':') return true;
+        }
+        return false;
       }
-      if (j < text.length) {
-        let k = j + 1;
-        while (k < text.length && /\s/.test(text[k])) k++;
-        if (k < text.length && text[k] === ':') return true; // "key": パターン
+    } else {
+      // オブジェクト内（またはルート）: "key": パターンのみ有効
+      if (ch === '"') {
+        let j = i + 1;
+        while (j < text.length) {
+          if (text[j] === '\\') { j += 2; continue; }
+          if (text[j] === '"') break;
+          j++;
+        }
+        if (j < text.length) {
+          let k = j + 1;
+          while (k < text.length && /\s/.test(text[k])) k++;
+          if (k < text.length && text[k] === ':') return true;
+        }
       }
-      return false;
     }
     return false;
   }, []);
 
   // JSON文字列値内のエスケープされていないダブルクォートを修復
-  // 例: "日本に"乾杯文化"を根づかせていく" → "日本に\"乾杯文化\"を根づかせていく"
+  // ネスト構造（配列/オブジェクト）を追跡し、コンテキストに応じて判定
   const repairJsonQuotes = useCallback((text: string): string => {
     const result: string[] = [];
     let i = 0;
     let inString = false;
+    // 'a' = array, 'o' = object でネスト構造を追跡
+    const contextStack: string[] = [];
 
     while (i < text.length) {
       const ch = text[i];
@@ -86,6 +107,12 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
         result.push(ch);
         if (ch === '"') {
           inString = true;
+        } else if (ch === '[') {
+          contextStack.push('a');
+        } else if (ch === '{') {
+          contextStack.push('o');
+        } else if (ch === ']' || ch === '}') {
+          contextStack.pop();
         }
         i++;
       } else {
@@ -108,8 +135,9 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
           if (nextChar === '' || nextChar === '}' || nextChar === ']' || nextChar === ':') {
             isStructural = true;
           } else if (nextChar === ',') {
-            // カンマの場合: その後が有効なJSON構造かチェック
-            isStructural = looksLikeJsonAfterComma(text, j + 1);
+            // カンマの場合: 現在のコンテキスト（配列/オブジェクト）に応じて判定
+            const currentContext = contextStack.length > 0 ? contextStack[contextStack.length - 1] : 'o';
+            isStructural = looksLikeJsonAfterComma(text, j + 1, currentContext === 'a');
           }
 
           if (isStructural) {
