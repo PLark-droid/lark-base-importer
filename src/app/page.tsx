@@ -452,9 +452,9 @@ export default function Home() {
       {/* Header */}
       <header className="bg-white border-b border-gray-200">
         <div className="max-w-4xl mx-auto px-6 py-4">
-          <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+          <a href="/" className="text-2xl font-bold text-gray-800 flex items-center gap-2 hover:text-blue-600 transition-colors">
             JSON → Lark Base Importer
-          </h1>
+          </a>
           <p className="text-sm text-gray-500 mt-1">
             JSONデータを既存のLark Baseテーブルにインポート
           </p>
