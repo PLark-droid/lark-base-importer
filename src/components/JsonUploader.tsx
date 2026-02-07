@@ -28,80 +28,263 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
   const [error, setError] = useState<string | null>(null);
   const [jsonText, setJsonText] = useState('');
 
+  // JSONテキストをサニタイズ（BOM、不可視文字、制御文字を処理）
+  const sanitizeJsonText = useCallback((text: string): string => {
+    let sanitized = text;
+    // BOM（Byte Order Mark）を除去
+    sanitized = sanitized.replace(/^\uFEFF/, '');
+    // 先頭・末尾のゼロ幅スペース・NBSP・通常空白を除去
+    sanitized = sanitized.replace(/^[\s\u200B\u200C\u200D\u200E\u200F\uFEFF\u00A0]+/, '');
+    sanitized = sanitized.replace(/[\s\u200B\u200C\u200D\u200E\u200F\uFEFF\u00A0]+$/, '');
+    // JSON構造部分のゼロ幅文字を除去（文字列値の外側）
+    sanitized = sanitized.replace(/[\u200B\u200C\u200D\u200E\u200F]/g, '');
+    return sanitized;
+  }, []);
+
+  // カンマの後ろが有効なJSON継続かチェック（コンテキスト依存）
+  // inArray: 現在の文字列が配列内にあるかどうか
+  // - 配列内: "value", "value" は有効（配列要素）
+  // - オブジェクト内: "key": パターンのみ有効
+  const looksLikeJsonAfterComma = useCallback((text: string, pos: number, inArray: boolean): boolean => {
+    let i = pos;
+    while (i < text.length && /\s/.test(text[i])) i++;
+    if (i >= text.length) return false;
+
+    const ch = text[i];
+
+    if (inArray) {
+      // 配列内: あらゆるJSON値が有効
+      if (ch === '{' || ch === '[') return true;
+      if (/[0-9-]/.test(ch)) return true;
+      if (/^(true|false|null)/.test(text.substring(i))) return true;
+      if (ch === '"') {
+        // 文字列値の場合: 閉じ"の後に , ] } : が来れば有効な配列要素
+        let j = i + 1;
+        while (j < text.length) {
+          if (text[j] === '\\') { j += 2; continue; }
+          if (text[j] === '"') break;
+          j++;
+        }
+        if (j < text.length) {
+          let k = j + 1;
+          while (k < text.length && /\s/.test(text[k])) k++;
+          if (k >= text.length || text[k] === ',' || text[k] === ']' || text[k] === '}' || text[k] === ':') return true;
+        }
+        return false;
+      }
+    } else {
+      // オブジェクト内（またはルート）: "key": パターンのみ有効
+      if (ch === '"') {
+        let j = i + 1;
+        while (j < text.length) {
+          if (text[j] === '\\') { j += 2; continue; }
+          if (text[j] === '"') break;
+          j++;
+        }
+        if (j < text.length) {
+          let k = j + 1;
+          while (k < text.length && /\s/.test(text[k])) k++;
+          if (k < text.length && text[k] === ':') return true;
+        }
+      }
+    }
+    return false;
+  }, []);
+
+  // JSON文字列値内のエスケープされていないダブルクォートを修復
+  // ネスト構造（配列/オブジェクト）を追跡し、コンテキストに応じて判定
+  const repairJsonQuotes = useCallback((text: string): string => {
+    const result: string[] = [];
+    let i = 0;
+    let inString = false;
+    // 'a' = array, 'o' = object でネスト構造を追跡
+    const contextStack: string[] = [];
+
+    while (i < text.length) {
+      const ch = text[i];
+
+      if (!inString) {
+        result.push(ch);
+        if (ch === '"') {
+          inString = true;
+        } else if (ch === '[') {
+          contextStack.push('a');
+        } else if (ch === '{') {
+          contextStack.push('o');
+        } else if (ch === ']' || ch === '}') {
+          contextStack.pop();
+        }
+        i++;
+      } else {
+        // 文字列内
+        if (ch === '\\') {
+          // エスケープシーケンス: 2文字をそのまま通す
+          result.push(ch);
+          i++;
+          if (i < text.length) {
+            result.push(text[i]);
+            i++;
+          }
+        } else if (ch === '"') {
+          // この " は文字列の終端か、埋め込みクォートか？
+          let j = i + 1;
+          while (j < text.length && /\s/.test(text[j])) j++;
+          const nextChar = j < text.length ? text[j] : '';
+
+          let isStructural = false;
+          if (nextChar === '' || nextChar === '}' || nextChar === ']' || nextChar === ':') {
+            isStructural = true;
+          } else if (nextChar === ',') {
+            // カンマの場合: 現在のコンテキスト（配列/オブジェクト）に応じて判定
+            const currentContext = contextStack.length > 0 ? contextStack[contextStack.length - 1] : 'o';
+            isStructural = looksLikeJsonAfterComma(text, j + 1, currentContext === 'a');
+          }
+
+          if (isStructural) {
+            result.push(ch);
+            inString = false;
+            i++;
+          } else {
+            // 埋め込みクォート → エスケープ
+            result.push('\\', '"');
+            i++;
+          }
+        } else {
+          result.push(ch);
+          i++;
+        }
+      }
+    }
+
+    return result.join('');
+  }, [looksLikeJsonAfterComma]);
+
   const parseAndValidateJson = useCallback(
     (content: string, sourceName: string): ParsedFile | null => {
-      try {
-        const parsed = JSON.parse(content);
+      // Step 1: サニタイズ
+      const sanitized = sanitizeJsonText(content);
 
-        // Handle array of objects
-        if (Array.isArray(parsed)) {
-          if (parsed.length === 0) {
-            return {
-              fileName: sourceName,
-              records: [],
-              status: 'error',
-              error: '空の配列はインポートできません',
-            };
-          }
-
-          const invalidItems = parsed.filter(
-            (item) => typeof item !== 'object' || item === null || Array.isArray(item)
-          );
-          if (invalidItems.length > 0) {
-            return {
-              fileName: sourceName,
-              records: [],
-              status: 'error',
-              error: '配列内のすべての要素はオブジェクトである必要があります',
-            };
-          }
-
-          const records: ParsedRecord[] = parsed.map((item) => ({
-            data: item as Record<string, unknown>,
-            status: 'pending' as const,
-          }));
-
-          return {
-            fileName: sourceName,
-            records,
-            status: 'pending',
-          };
-        }
-
-        // Handle single object
-        if (typeof parsed !== 'object' || parsed === null) {
-          return {
-            fileName: sourceName,
-            records: [],
-            status: 'error',
-            error: 'JSONオブジェクトまたは配列形式で入力してください',
-          };
-        }
-
-        if (Object.keys(parsed).length === 0) {
-          return {
-            fileName: sourceName,
-            records: [],
-            status: 'error',
-            error: '空のJSONオブジェクトはインポートできません',
-          };
-        }
-
-        return {
-          fileName: sourceName,
-          records: [{ data: parsed, status: 'pending' }],
-          status: 'pending',
-        };
-      } catch {
+      if (!sanitized) {
         return {
           fileName: sourceName,
           records: [],
           status: 'error',
-          error: 'JSONの解析に失敗しました。有効なJSON形式か確認してください',
+          error: '入力が空です',
         };
       }
+
+      // Step 2: パース試行（3段階のリトライ付き）
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(sanitized);
+      } catch (e1) {
+        // Step 3: まずクォート修復（埋め込みダブルクォートのエスケープ）
+        // ※制御文字エスケープより先に実行する（regexが未エスケープ"で誤動作するため）
+        try {
+          const repaired = repairJsonQuotes(sanitized);
+          parsed = JSON.parse(repaired);
+        } catch {
+          // Step 4: クォート修復 + 制御文字エスケープの組み合わせ
+          try {
+            const repaired = repairJsonQuotes(sanitized);
+            const fixed = repaired.replace(
+              /"(?:[^"\\]|\\.)*"/g,
+              (match) => match
+                .replace(/\t/g, '\\t')
+                .replace(/\n/g, '\\n')
+                .replace(/\r/g, '\\r')
+                .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, (ch) => {
+                  return '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0');
+                })
+            );
+            parsed = JSON.parse(fixed);
+          } catch (e3) {
+            // 最終的にパース失敗 - 各段階のエラーを表示
+            const errMsg = e1 instanceof Error ? e1.message : '';
+            const repairErrMsg = e3 instanceof Error ? e3.message : '';
+            const posMatch = errMsg.match(/position (\d+)/);
+            let hint = '';
+            if (posMatch) {
+              const pos = parseInt(posMatch[1]);
+              const around = sanitized.substring(Math.max(0, pos - 30), pos + 30);
+              const charCode = sanitized.charCodeAt(pos);
+              hint = `\n位置${pos}付近: "...${around}..."\n問題の文字コード: U+${charCode.toString(16).padStart(4, '0').toUpperCase()}`;
+            }
+            // 修復後のエラーが異なる場合は追加表示
+            const repairHint = repairErrMsg && repairErrMsg !== errMsg
+              ? `\n修復試行後: ${repairErrMsg}`
+              : '';
+            return {
+              fileName: sourceName,
+              records: [],
+              status: 'error',
+              error: `JSONの解析に失敗しました: ${errMsg}${hint}${repairHint}`,
+            };
+          }
+        }
+      }
+
+      // Handle array of objects
+      if (Array.isArray(parsed)) {
+        if (parsed.length === 0) {
+          return {
+            fileName: sourceName,
+            records: [],
+            status: 'error',
+            error: '空の配列はインポートできません',
+          };
+        }
+
+        const invalidItems = parsed.filter(
+          (item) => typeof item !== 'object' || item === null || Array.isArray(item)
+        );
+        if (invalidItems.length > 0) {
+          return {
+            fileName: sourceName,
+            records: [],
+            status: 'error',
+            error: '配列内のすべての要素はオブジェクトである必要があります',
+          };
+        }
+
+        const records: ParsedRecord[] = parsed.map((item) => ({
+          data: item as Record<string, unknown>,
+          status: 'pending' as const,
+        }));
+
+        return {
+          fileName: sourceName,
+          records,
+          status: 'pending',
+        };
+      }
+
+      // Handle single object
+      if (typeof parsed !== 'object' || parsed === null) {
+        return {
+          fileName: sourceName,
+          records: [],
+          status: 'error',
+          error: 'JSONオブジェクトまたは配列形式で入力してください',
+        };
+      }
+
+      if (Object.keys(parsed as Record<string, unknown>).length === 0) {
+        return {
+          fileName: sourceName,
+          records: [],
+          status: 'error',
+          error: '空のJSONオブジェクトはインポートできません',
+        };
+      }
+
+      return {
+        fileName: sourceName,
+        records: [{ data: parsed as Record<string, unknown>, status: 'pending' }],
+        status: 'pending',
+      };
     },
-    []
+    [sanitizeJsonText, repairJsonQuotes]
   );
 
   const handleFiles = useCallback(
@@ -266,7 +449,7 @@ export default function JsonUploader({ onJsonParsed, parsedFiles }: JsonUploader
       )}
 
       {/* File List Preview */}
-      {mode === 'file' && parsedFiles.length > 0 && (
+      {parsedFiles.length > 0 && (
         <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden">
           <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
             <h4 className="text-sm font-medium text-gray-700">

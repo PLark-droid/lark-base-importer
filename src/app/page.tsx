@@ -420,7 +420,10 @@ export default function Home() {
     setStep('upload');
     setParsedFiles([]);
     setLarkUrl('');
-    setUrlInfo(null);
+    // 固定URLモードの場合、urlInfoをリセットしない（useEffectが再実行されないため）
+    if (!isUrlFixed) {
+      setUrlInfo(null);
+    }
     setUrlError(null);
     setError(null);
     setImportProgress({
@@ -594,8 +597,8 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Proceed Button */}
-              {parsedFiles.length > 0 && (
+              {/* Proceed Button - 有効なファイルがある場合のみ表示 */}
+              {validFileCount > 0 && (
                 <div className="pt-4 border-t border-gray-200">
                   <button
                     onClick={handleProceedToValidation}
