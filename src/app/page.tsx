@@ -4,7 +4,13 @@ import { useState, useCallback, useEffect } from 'react';
 import JsonUploader, { ParsedFile } from '@/components/JsonUploader';
 import FieldPreview, { ImportProgress, FieldTypeMapping } from '@/components/FieldPreview';
 import FieldValidation, { FieldMappingDecision, ExistingField } from '@/components/FieldValidation';
-import { parseLarkBaseUrl, LarkBaseUrlInfo, validateFieldsAgainstExisting, FieldValidationResult } from '@/lib/lark';
+import {
+  parseLarkBaseUrl,
+  LarkBaseUrlInfo,
+  validateFieldsAgainstExisting,
+  FieldValidationResult,
+  normalizeFieldName,
+} from '@/lib/lark';
 
 type Step = 'upload' | 'validation' | 'preview' | 'success';
 
@@ -207,25 +213,44 @@ export default function Home() {
       (f) => f.status !== 'error' && f.records.length > 0
     );
 
+    const similarMappingsByNormalized = new Map<string, string | null>();
+    if (fieldMappingDecision) {
+      fieldMappingDecision.similarMappings.forEach((value, key) => {
+        similarMappingsByNormalized.set(normalizeFieldName(key), value);
+      });
+    }
+    const approvedNewNormalized = new Set<string>();
+    if (fieldMappingDecision) {
+      fieldMappingDecision.approvedNewFields.forEach((field) => {
+        approvedNewNormalized.add(normalizeFieldName(field));
+      });
+    }
+
     // フィールドマッピング決定に基づいてレコードを変換
-    // シンプル化: 類似フィールドのマッピングのみ適用し、それ以外はすべて通す
     const transformRecord = (data: Record<string, unknown>): Record<string, unknown> => {
       const transformed: Record<string, unknown> = {};
 
       for (const [key, value] of Object.entries(data)) {
+        const normalizedKey = normalizeFieldName(key);
+
         // 類似フィールドのマッピングをチェック
-        if (fieldMappingDecision?.similarMappings.has(key)) {
-          const mappedField = fieldMappingDecision.similarMappings.get(key);
+        if (similarMappingsByNormalized.has(normalizedKey)) {
+          const mappedField = similarMappingsByNormalized.get(normalizedKey);
           if (mappedField !== null && mappedField !== undefined) {
             // 既存フィールドにマッピング
             transformed[mappedField] = value;
           } else {
-            // null = 新規作成
+            // null = 類似フィールドを新規作成
             transformed[key] = value;
           }
-        } else {
-          // それ以外はすべてそのまま通す
+        } else if (!fieldMappingDecision || approvedNewNormalized.has(normalizedKey)) {
+          // 新規フィールドは承認済みのみ通す（未検証フローではすべて通す）
           transformed[key] = value;
+        } else {
+          // 未承認の新規フィールドはスキップ
+          if (process.env.NODE_ENV !== 'production') {
+            console.log(`Skipping unapproved field: ${key}`);
+          }
         }
       }
 

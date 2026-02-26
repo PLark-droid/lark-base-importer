@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { normalizeFieldName } from '@/lib/lark';
 
 export interface ExistingField {
   field_id: string;
@@ -16,7 +17,7 @@ export interface SimilarMatch {
 }
 
 export interface FieldMappingDecision {
-  // 類似フィールドのマッピング決定: jsonField -> existingField or null(新規作成)
+  // 類似フィールドのマッピング決定: normalizedFieldName -> existingField or null(新規作成)
   similarMappings: Map<string, string | null>;
   // 新規フィールド作成の承認
   approvedNewFields: Set<string>;
@@ -42,49 +43,54 @@ export default function FieldValidation({
   // 類似フィールドのマッピング状態: jsonField -> 'existing' | 'new'
   const [similarDecisions, setSimilarDecisions] = useState<Map<string, 'existing' | 'new'>>(() => {
     const initial = new Map<string, 'existing' | 'new'>();
-    similarMatches.forEach((m) => initial.set(m.jsonField, 'existing'));
+    similarMatches.forEach((m) => initial.set(m.normalizedName, 'existing'));
     return initial;
   });
 
   // 新規フィールドの承認状態
-  const [approvedNew, setApprovedNew] = useState<Set<string>>(() => new Set(newFields));
+  const [approvedNew, setApprovedNew] = useState<Set<string>>(
+    () => new Set(newFields.map((field) => normalizeFieldName(field)))
+  );
 
-  const handleSimilarDecision = (jsonField: string, decision: 'existing' | 'new') => {
+  const handleSimilarDecision = (normalizedField: string, decision: 'existing' | 'new') => {
     setSimilarDecisions((prev) => {
       const next = new Map(prev);
-      next.set(jsonField, decision);
+      next.set(normalizedField, decision);
       return next;
     });
   };
 
   const toggleNewFieldApproval = (field: string) => {
+    const normalizedField = normalizeFieldName(field);
     setApprovedNew((prev) => {
       const next = new Set(prev);
-      if (next.has(field)) {
-        next.delete(field);
+      if (next.has(normalizedField)) {
+        next.delete(normalizedField);
       } else {
-        next.add(field);
+        next.add(normalizedField);
       }
       return next;
     });
   };
 
+  const normalizedNewFieldCount = new Set(newFields.map((field) => normalizeFieldName(field))).size;
+
   const toggleAllNewFields = () => {
-    if (approvedNew.size === newFields.length) {
+    if (approvedNew.size === normalizedNewFieldCount) {
       setApprovedNew(new Set());
     } else {
-      setApprovedNew(new Set(newFields));
+      setApprovedNew(new Set(newFields.map((field) => normalizeFieldName(field))));
     }
   };
 
   const handleApprove = () => {
     const similarMappings = new Map<string, string | null>();
     similarMatches.forEach((m) => {
-      const decision = similarDecisions.get(m.jsonField);
+      const decision = similarDecisions.get(m.normalizedName);
       if (decision === 'existing') {
-        similarMappings.set(m.jsonField, m.existingField);
+        similarMappings.set(m.normalizedName, m.existingField);
       } else {
-        similarMappings.set(m.jsonField, null); // null = 新規作成
+        similarMappings.set(m.normalizedName, null); // null = 新規作成
       }
     });
 
@@ -154,10 +160,10 @@ export default function FieldValidation({
                 </div>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => handleSimilarDecision(match.jsonField, 'existing')}
+                    onClick={() => handleSimilarDecision(match.normalizedName, 'existing')}
                     disabled={isLoading}
                     className={`px-3 py-1 text-xs rounded transition-colors ${
-                      similarDecisions.get(match.jsonField) === 'existing'
+                      similarDecisions.get(match.normalizedName) === 'existing'
                         ? 'bg-blue-600 text-white'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                     } disabled:opacity-50`}
@@ -165,10 +171,10 @@ export default function FieldValidation({
                     既存に格納
                   </button>
                   <button
-                    onClick={() => handleSimilarDecision(match.jsonField, 'new')}
+                    onClick={() => handleSimilarDecision(match.normalizedName, 'new')}
                     disabled={isLoading}
                     className={`px-3 py-1 text-xs rounded transition-colors ${
-                      similarDecisions.get(match.jsonField) === 'new'
+                      similarDecisions.get(match.normalizedName) === 'new'
                         ? 'bg-orange-600 text-white'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                     } disabled:opacity-50`}
@@ -201,7 +207,7 @@ export default function FieldValidation({
                 disabled={isLoading}
                 className="text-xs text-blue-600 hover:text-blue-800 underline disabled:opacity-50"
               >
-                {approvedNew.size === newFields.length ? 'すべて解除' : 'すべて選択'}
+                {approvedNew.size === normalizedNewFieldCount ? 'すべて解除' : 'すべて選択'}
               </button>
             </div>
           </div>
@@ -214,7 +220,7 @@ export default function FieldValidation({
                 >
                   <input
                     type="checkbox"
-                    checked={approvedNew.has(field)}
+                    checked={approvedNew.has(normalizeFieldName(field))}
                     onChange={() => toggleNewFieldApproval(field)}
                     disabled={isLoading}
                     className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 disabled:opacity-50"
@@ -224,10 +230,10 @@ export default function FieldValidation({
               ))}
             </div>
           </div>
-          {approvedNew.size < newFields.length && (
+          {approvedNew.size < normalizedNewFieldCount && (
             <div className="px-4 py-2 bg-yellow-50 border-t border-yellow-200">
               <p className="text-xs text-yellow-700">
-                未承認のフィールド（{newFields.length - approvedNew.size}件）はスキップされ、データは格納されません。
+                未承認のフィールド（{normalizedNewFieldCount - approvedNew.size}件）はスキップされ、データは格納されません。
               </p>
             </div>
           )}

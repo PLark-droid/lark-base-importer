@@ -117,6 +117,10 @@ interface LarkCreateFieldResponse {
  */
 export function normalizeFieldName(name: string): string {
   return name
+    // Unicode正規化（NFKC: 互換分解→正準合成。全角英数→半角、異体字統一等）
+    .normalize('NFKC')
+    // ゼロ幅文字・BOM・不可視文字を除去
+    .replace(/[\u200B\u200C\u200D\u200E\u200F\uFEFF\u00AD]/g, '')
     // 全角括弧→半角
     .replace(/（/g, '(')
     .replace(/）/g, ')')
@@ -181,26 +185,27 @@ export function validateFieldsAgainstExisting(
   const normalizedMap = new Map<string, string>();
 
   for (const field of existingFields) {
+    const normalizedExisting = normalizeFieldName(field.field_name);
     exactMap.set(field.field_name, field.field_name);
-    normalizedMap.set(field.normalized_name, field.field_name);
+    normalizedMap.set(field.normalized_name || normalizedExisting, field.field_name);
   }
 
   for (const jsonField of jsonFields) {
     const normalizedJsonField = normalizeFieldName(jsonField);
+    const normalizedMatchedField = normalizedMap.get(normalizedJsonField);
 
-    // 完全一致チェック
-    if (exactMap.has(jsonField)) {
+    // 正規化名で比較した上で、元文字列も同一なら完全一致
+    if (normalizedMatchedField && exactMap.has(jsonField) && normalizedMatchedField === jsonField) {
       result.exactMatches.push({
         jsonField,
         existingField: jsonField,
       });
     }
     // 正規化後に一致（類似）チェック
-    else if (normalizedMap.has(normalizedJsonField)) {
-      const existingField = normalizedMap.get(normalizedJsonField)!;
+    else if (normalizedMatchedField) {
       result.similarMatches.push({
         jsonField,
-        existingField,
+        existingField: normalizedMatchedField,
         normalizedName: normalizedJsonField,
       });
     }

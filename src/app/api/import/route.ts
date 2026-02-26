@@ -111,15 +111,25 @@ export async function POST(request: NextRequest) {
 
     // 4. 全レコードから一意のフィールド名を収集
     const allFieldNames = new Set<string>();
+    const normalizedToIncoming = new Map<string, string>();
+    const normalizedToAliases = new Map<string, Set<string>>();
     records.forEach((record) => {
-      Object.keys(record).forEach((key) => allFieldNames.add(key));
+      Object.keys(record).forEach((key) => {
+        allFieldNames.add(key);
+        const normalizedKey = normalizeFieldName(key);
+        if (!normalizedToIncoming.has(normalizedKey)) {
+          normalizedToIncoming.set(normalizedKey, key);
+        }
+        const aliases = normalizedToAliases.get(normalizedKey) ?? new Set<string>();
+        aliases.add(key);
+        normalizedToAliases.set(normalizedKey, aliases);
+      });
     });
 
-    // 5. 不足しているフィールドを自動作成（正規化名で比較）
-    const missingFields = Array.from(allFieldNames).filter((name) => {
-      const normalizedName = normalizeFieldName(name);
-      return !existingNormalizedNames.has(normalizedName);
-    });
+    // 5. 不足しているフィールドを自動作成（正規化名で比較し重複作成を防止）
+    const missingFields = Array.from(normalizedToIncoming.entries())
+      .filter(([normalizedName]) => !existingNormalizedNames.has(normalizedName))
+      .map(([, originalName]) => originalName);
 
     if (missingFields.length > 0) {
       console.log(`Creating ${missingFields.length} missing fields:`, missingFields);
@@ -127,15 +137,26 @@ export async function POST(request: NextRequest) {
       for (const fieldName of missingFields) {
         // ユーザーが選択した型があればそれを使用、なければ自動推論
         let fieldType: number;
-        if (fieldTypes && fieldTypes[fieldName]) {
-          fieldType = larkTypeToNumber(fieldTypes[fieldName]);
-          console.log(`Using user-selected type for ${fieldName}: ${fieldTypes[fieldName]} -> ${fieldType}`);
+        const normalizedFieldName = normalizeFieldName(fieldName);
+        const aliases = normalizedToAliases.get(normalizedFieldName) ?? new Set([fieldName]);
+        const selectedTypeEntry = Array.from(aliases)
+          .map((alias) => (fieldTypes ? fieldTypes[alias] : undefined))
+          .find((value): value is LarkFieldType => value !== undefined);
+
+        if (selectedTypeEntry) {
+          fieldType = larkTypeToNumber(selectedTypeEntry);
+          console.log(`Using user-selected type for ${fieldName}: ${selectedTypeEntry} -> ${fieldType}`);
         } else {
           // Find first non-null value to infer type
           let fieldValue: unknown = null;
           for (const record of records) {
-            if (record[fieldName] !== null && record[fieldName] !== undefined) {
-              fieldValue = record[fieldName];
+            for (const alias of aliases) {
+              if (record[alias] !== null && record[alias] !== undefined) {
+                fieldValue = record[alias];
+                break;
+              }
+            }
+            if (fieldValue !== null && fieldValue !== undefined) {
               break;
             }
           }
@@ -145,6 +166,8 @@ export async function POST(request: NextRequest) {
         try {
           await createField(token, appToken, tableId, fieldName, fieldType);
           console.log(`Created field: ${fieldName} (type: ${fieldType})`);
+          fieldMapping.set(normalizedFieldName, fieldName);
+          existingNormalizedNames.add(normalizedFieldName);
           // 新しく作成されたURL型フィールドもurlFieldNamesに追加
           if (fieldType === 15) {
             urlFieldNames.add(fieldName);
