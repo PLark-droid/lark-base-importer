@@ -11,6 +11,14 @@ import {
   notifyImportError,
   notifyGeneralError,
 } from '@/lib/lark';
+import {
+  authorizeApiRequest,
+  getRecordsArray,
+  getRequiredTrimmedString,
+  parseJsonBody,
+} from '../_utils';
+
+const isDevelopment = process.env.NODE_ENV !== 'production';
 
 // Lark Base フィールド型のマッピング
 type LarkFieldType = 'text' | 'number' | 'checkbox' | 'url' | 'datetime' | 'phone';
@@ -44,15 +52,25 @@ export async function POST(request: NextRequest) {
   let savedRecords: Array<Record<string, unknown>> | undefined;
 
   try {
-    const body: ImportRequest = await request.json();
-    const { records, fieldTypes } = body;
-    savedRecords = records; // エラー通知用に保存
-    // 環境変数の改行をトリム
-    const appToken = (body.appToken || '').trim();
-    const tableId = (body.tableId || '').trim();
+    const authError = authorizeApiRequest(request);
+    if (authError) {
+      return authError;
+    }
+
+    const parsedBody = await parseJsonBody(request);
+    if ('response' in parsedBody) {
+      return parsedBody.response;
+    }
+
+    const body = parsedBody.data;
+    const records = getRecordsArray(body);
+    const fieldTypes = body.fieldTypes as FieldTypeMapping | undefined;
+    savedRecords = records ?? undefined;
+    const appToken = getRequiredTrimmedString(body, 'appToken');
+    const tableId = getRequiredTrimmedString(body, 'tableId');
 
     // バリデーション
-    if (!records || !Array.isArray(records) || records.length === 0) {
+    if (!records) {
       return NextResponse.json(
         { error: 'レコードデータが無効です' },
         { status: 400 }
@@ -97,7 +115,7 @@ export async function POST(request: NextRequest) {
     const urlFieldNames = new Set<string>(
       existingFields.filter((f) => f.type === 15).map((f) => f.field_name)
     );
-    if (urlFieldNames.size > 0) {
+    if (isDevelopment && urlFieldNames.size > 0) {
       console.log('URL type fields detected:', Array.from(urlFieldNames));
     }
 
@@ -105,8 +123,29 @@ export async function POST(request: NextRequest) {
     const numberFieldNames = new Set<string>(
       existingFields.filter((f) => f.type === 2).map((f) => f.field_name)
     );
-    if (numberFieldNames.size > 0) {
+    if (isDevelopment && numberFieldNames.size > 0) {
       console.log('Number type fields detected:', Array.from(numberFieldNames));
+    }
+
+    const checkboxFieldNames = new Set<string>(
+      existingFields.filter((f) => f.type === 7).map((f) => f.field_name)
+    );
+    if (isDevelopment && checkboxFieldNames.size > 0) {
+      console.log('Checkbox type fields detected:', Array.from(checkboxFieldNames));
+    }
+
+    const datetimeFieldNames = new Set<string>(
+      existingFields.filter((f) => f.type === 5).map((f) => f.field_name)
+    );
+    if (isDevelopment && datetimeFieldNames.size > 0) {
+      console.log('Datetime type fields detected:', Array.from(datetimeFieldNames));
+    }
+
+    const phoneFieldNames = new Set<string>(
+      existingFields.filter((f) => f.type === 13).map((f) => f.field_name)
+    );
+    if (isDevelopment && phoneFieldNames.size > 0) {
+      console.log('Phone type fields detected:', Array.from(phoneFieldNames));
     }
 
     // 4. 全レコードから一意のフィールド名を収集
@@ -132,7 +171,9 @@ export async function POST(request: NextRequest) {
       .map(([, originalName]) => originalName);
 
     if (missingFields.length > 0) {
-      console.log(`Creating ${missingFields.length} missing fields:`, missingFields);
+      if (isDevelopment) {
+        console.log(`Creating ${missingFields.length} missing fields:`, missingFields);
+      }
 
       for (const fieldName of missingFields) {
         // ユーザーが選択した型があればそれを使用、なければ自動推論
@@ -145,7 +186,9 @@ export async function POST(request: NextRequest) {
 
         if (selectedTypeEntry) {
           fieldType = larkTypeToNumber(selectedTypeEntry);
-          console.log(`Using user-selected type for ${fieldName}: ${selectedTypeEntry} -> ${fieldType}`);
+          if (isDevelopment) {
+            console.log(`Using user-selected type for ${fieldName}: ${selectedTypeEntry} -> ${fieldType}`);
+          }
         } else {
           // Find first non-null value to infer type
           let fieldValue: unknown = null;
@@ -165,7 +208,9 @@ export async function POST(request: NextRequest) {
 
         try {
           await createField(token, appToken, tableId, fieldName, fieldType);
-          console.log(`Created field: ${fieldName} (type: ${fieldType})`);
+          if (isDevelopment) {
+            console.log(`Created field: ${fieldName} (type: ${fieldType})`);
+          }
           fieldMapping.set(normalizedFieldName, fieldName);
           existingNormalizedNames.add(normalizedFieldName);
           // 新しく作成されたURL型フィールドもurlFieldNamesに追加
@@ -175,6 +220,15 @@ export async function POST(request: NextRequest) {
           // 新しく作成された数値型フィールドもnumberFieldNamesに追加
           if (fieldType === 2) {
             numberFieldNames.add(fieldName);
+          }
+          if (fieldType === 7) {
+            checkboxFieldNames.add(fieldName);
+          }
+          if (fieldType === 5) {
+            datetimeFieldNames.add(fieldName);
+          }
+          if (fieldType === 13) {
+            phoneFieldNames.add(fieldName);
           }
         } catch (error) {
           console.error(`Failed to create field: ${fieldName}`, error);
@@ -191,12 +245,17 @@ export async function POST(request: NextRequest) {
       records,
       fieldMapping,
       urlFieldNames,
-      numberFieldNames
+      numberFieldNames,
+      checkboxFieldNames,
+      datetimeFieldNames,
+      phoneFieldNames
     );
 
     // エラーがある場合は詳細を表示し、通知を送信
     if (result.failedCount > 0 && result.errors.length > 0) {
+      if (isDevelopment) {
       console.log('Import completed with errors:', result.errors.slice(0, 5));
+      }
 
       // 通知先が設定されている場合、Larkグループチャットで通知
       const notifyChatId = process.env.NOTIFY_CHAT_ID;

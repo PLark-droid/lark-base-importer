@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getTenantAccessToken, getAppInfo, getTableInfo } from '@/lib/lark';
+import {
+  authorizeApiRequest,
+  getRequiredTrimmedString,
+  parseJsonBody,
+} from '../_utils';
 
 interface AppInfoRequest {
   appToken: string;
@@ -8,25 +13,19 @@ interface AppInfoRequest {
 
 export async function POST(request: NextRequest) {
   try {
-    // リクエストボディをテキストとして読み取り
-    const rawBody = await request.text();
-    console.log('Raw request body:', rawBody);
-
-    // JSONとしてパース
-    let body: AppInfoRequest;
-    try {
-      body = JSON.parse(rawBody);
-    } catch (parseError) {
-      console.error('JSON parse error:', parseError, 'Body:', rawBody);
-      return NextResponse.json(
-        { error: `Invalid JSON: ${rawBody.substring(0, 100)}`, success: false },
-        { status: 400 }
-      );
+    const authError = authorizeApiRequest(request);
+    if (authError) {
+      return authError;
     }
 
-    // 環境変数の改行をトリム
-    const appToken = (body.appToken || '').trim();
-    const tableId = (body.tableId || '').trim();
+    const parsedBody = await parseJsonBody(request);
+    if ('response' in parsedBody) {
+      return parsedBody.response;
+    }
+
+    const body = parsedBody.data;
+    const appToken = getRequiredTrimmedString(body, 'appToken');
+    const tableId = getRequiredTrimmedString(body, 'tableId');
 
     if (!appToken || !tableId) {
       return NextResponse.json(

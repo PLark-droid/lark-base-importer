@@ -4,6 +4,7 @@
  */
 
 const LARK_API_BASE = 'https://open.larksuite.com/open-apis';
+const isDevelopment = process.env.NODE_ENV !== 'production';
 
 /**
  * Lark Base URLからapp_tokenとtable_idを抽出
@@ -402,7 +403,9 @@ export async function getTableFields(
     pageToken = data.data.has_more ? data.data.page_token : undefined;
   } while (pageToken);
 
-  console.log(`Fetched ${allItems.length} fields from table`);
+  if (isDevelopment) {
+    console.log(`Fetched ${allItems.length} fields from table`);
+  }
   return allItems;
 }
 
@@ -532,7 +535,10 @@ function processFieldValues(
   fields: Record<string, unknown>,
   fieldMapping?: Map<string, string>,
   urlFieldNames?: Set<string>,
-  numberFieldNames?: Set<string>
+  numberFieldNames?: Set<string>,
+  checkboxFieldNames?: Set<string>,
+  datetimeFieldNames?: Set<string>,
+  phoneFieldNames?: Set<string>
 ): Record<string, unknown> {
   const processed: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(fields)) {
@@ -552,7 +558,9 @@ function processFieldValues(
     // Lark Base APIのURL型フィールドは { link: "url", text: "表示テキスト" } 形式が必要
     if (urlFieldNames && urlFieldNames.has(actualKey)) {
       if (!isValidUrl(value)) {
-        console.log(`Skipping invalid URL value for field "${actualKey}": ${value}`);
+        if (isDevelopment) {
+          console.log(`Skipping invalid URL value for field "${actualKey}": ${value}`);
+        }
         continue;
       }
       // 有効なURLの場合、Lark APIの形式に変換
@@ -571,6 +579,34 @@ function processFieldValues(
         processed[actualKey] = Number(value);
       }
       // 数値に変換できない場合はスキップ
+      continue;
+    }
+
+    if (checkboxFieldNames && checkboxFieldNames.has(actualKey)) {
+      if (typeof value === 'boolean') {
+        processed[actualKey] = value;
+      } else if (typeof value === 'string') {
+        const normalizedValue = value.trim().toLowerCase();
+        if (normalizedValue === 'true') {
+          processed[actualKey] = true;
+        } else if (normalizedValue === 'false') {
+          processed[actualKey] = false;
+        }
+      }
+      continue;
+    }
+
+    if (datetimeFieldNames && datetimeFieldNames.has(actualKey)) {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        processed[actualKey] = value;
+      } else if (typeof value === 'string' && value.trim() !== '' && !Number.isNaN(Number(value))) {
+        processed[actualKey] = Number(value);
+      }
+      continue;
+    }
+
+    if (phoneFieldNames && phoneFieldNames.has(actualKey)) {
+      processed[actualKey] = String(value);
       continue;
     }
 
@@ -598,7 +634,10 @@ export async function batchCreateRecords(
   records: Array<Record<string, unknown>>,
   fieldMapping?: Map<string, string>,
   urlFieldNames?: Set<string>,
-  numberFieldNames?: Set<string>
+  numberFieldNames?: Set<string>,
+  checkboxFieldNames?: Set<string>,
+  datetimeFieldNames?: Set<string>,
+  phoneFieldNames?: Set<string>
 ): Promise<BatchCreateResult> {
   // appTokenとtableIdをトリム
   const cleanAppToken = appToken.trim();
@@ -616,7 +655,15 @@ export async function batchCreateRecords(
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     const batch = records.slice(i, i + BATCH_SIZE);
     const batchRecords = batch.map((fields) => ({
-      fields: processFieldValues(fields, fieldMapping, urlFieldNames, numberFieldNames),
+      fields: processFieldValues(
+        fields,
+        fieldMapping,
+        urlFieldNames,
+        numberFieldNames,
+        checkboxFieldNames,
+        datetimeFieldNames,
+        phoneFieldNames
+      ),
     }));
 
     try {
@@ -851,7 +898,9 @@ export async function sendMessageToChat(
       return false;
     }
 
-    console.log('Message sent successfully to chat:', cleanChatId);
+    if (isDevelopment) {
+      console.log('Message sent successfully to chat:', cleanChatId);
+    }
     return true;
   } catch (error) {
     console.error('Error sending message to chat:', error);

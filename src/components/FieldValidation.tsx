@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { normalizeFieldName } from '@/lib/lark';
 
 export interface ExistingField {
@@ -51,6 +51,13 @@ export default function FieldValidation({
   const [approvedNew, setApprovedNew] = useState<Set<string>>(
     () => new Set(newFields.map((field) => normalizeFieldName(field)))
   );
+
+  useEffect(() => {
+    const nextSimilarDecisions = new Map<string, 'existing' | 'new'>();
+    similarMatches.forEach((match) => nextSimilarDecisions.set(match.normalizedName, 'existing'));
+    setSimilarDecisions(nextSimilarDecisions);
+    setApprovedNew(new Set(newFields.map((field) => normalizeFieldName(field))));
+  }, [similarMatches, newFields]);
 
   const handleSimilarDecision = (normalizedField: string, decision: 'existing' | 'new') => {
     setSimilarDecisions((prev) => {

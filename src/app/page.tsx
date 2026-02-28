@@ -66,11 +66,17 @@ export default function Home() {
 
   // Base情報を取得（固定モード時）- 一度だけ実行
   useEffect(() => {
-    if (isUrlFixed && urlInfo && !baseInfo && !isLoadingBaseInfo && !baseInfoError) {
-      setIsLoadingBaseInfo(true);
-      fetch('/api/app-info', {
+    if (!(isUrlFixed && urlInfo && !baseInfo && !isLoadingBaseInfo && !baseInfoError)) {
+      return;
+    }
+
+    const controller = new AbortController();
+
+    setIsLoadingBaseInfo(true);
+    fetch('/api/app-info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           appToken: urlInfo.appToken,
           tableId: urlInfo.tableId,
@@ -89,13 +95,21 @@ export default function Home() {
           }
         })
         .catch((err) => {
+          if (err instanceof Error && err.name === 'AbortError') {
+            return;
+          }
           console.error('Failed to fetch base info:', err);
           setBaseInfoError(true);
         })
         .finally(() => {
-          setIsLoadingBaseInfo(false);
+          if (!controller.signal.aborted) {
+            setIsLoadingBaseInfo(false);
+          }
         });
-    }
+
+    return () => {
+      controller.abort();
+    };
   }, [isUrlFixed, urlInfo, baseInfo, isLoadingBaseInfo, baseInfoError]);
 
   const handleUrlChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -283,8 +297,9 @@ export default function Home() {
       totalFiles: validFiles.length,
     });
 
-    // フィールド型情報をログ出力（デバッグ用）
-    console.log('Selected field types:', fieldTypes);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('Selected field types:', fieldTypes);
+    }
 
     // Update file statuses to pending before processing
     setParsedFiles((prev) =>
@@ -343,10 +358,11 @@ export default function Home() {
       });
 
       try {
-        // デバッグ: バッチの最初のレコードをログ出力
-        console.log(`Batch ${i / batchSize + 1}: Sending ${batch.length} records`);
-        if (batch.length > 0) {
-          console.log('First record keys:', Object.keys(batch[0]));
+        if (process.env.NODE_ENV !== 'production') {
+          console.log(`Batch ${i / batchSize + 1}: Sending ${batch.length} records`);
+          if (batch.length > 0) {
+            console.log('First record keys:', Object.keys(batch[0]));
+          }
         }
 
         const response = await fetch('/api/import', {
@@ -363,10 +379,17 @@ export default function Home() {
         });
 
         const data = await response.json();
-        console.log('API Response:', { status: response.status, success: data.success, error: data.error, failedCount: data.data?.failedCount });
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('API Response:', {
+            status: response.status,
+            success: data.success,
+            error: data.error,
+            failedCount: data.data?.failedCount,
+          });
+        }
 
-        if (!response.ok || !data.success) {
-          // Handle batch failure - より詳細なエラーメッセージを表示
+        if (!response.ok) {
+          // HTTPエラー時のみ、バッチ全件を失敗扱いにする
           const errorMsg = data.error || data.data?.errors?.[0]?.error || 'インポートに失敗しました';
           console.error('Import failed:', errorMsg);
           for (let j = 0; j < batch.length; j++) {
@@ -377,14 +400,27 @@ export default function Home() {
           }
           failedCount += batch.length;
         } else {
-          successCount += data.data?.successCount || batch.length;
+          successCount += data.data?.successCount || 0;
           failedCount += data.data?.failedCount || 0;
           createdFieldsCount += data.data?.createdFieldsCount || 0;
+
           if (data.data?.errors) {
             errors.push(...data.data.errors.map((e: { index: number; error: string }) => ({
               index: i + e.index,
               error: e.error,
             })));
+          }
+
+          if (!data.success && !data.data) {
+            const errorMsg = data.error || 'インポートに失敗しました';
+            console.error('Import failed without batch detail:', errorMsg);
+            for (let j = 0; j < batch.length; j++) {
+              errors.push({
+                index: i + j,
+                error: errorMsg,
+              });
+            }
+            failedCount += batch.length;
           }
         }
       } catch (err) {

@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getTenantAccessToken, getTableFields, normalizeFieldName } from '@/lib/lark';
+import {
+  authorizeApiRequest,
+  getRequiredTrimmedString,
+  parseJsonBody,
+} from '../_utils';
 
 export interface ExistingField {
   field_id: string;
@@ -15,10 +20,19 @@ interface FieldsRequest {
 
 export async function POST(request: NextRequest) {
   try {
-    const body: FieldsRequest = await request.json();
-    // 環境変数の改行をトリム
-    const appToken = (body.appToken || '').trim();
-    const tableId = (body.tableId || '').trim();
+    const authError = authorizeApiRequest(request);
+    if (authError) {
+      return authError;
+    }
+
+    const parsedBody = await parseJsonBody(request);
+    if ('response' in parsedBody) {
+      return parsedBody.response;
+    }
+
+    const body = parsedBody.data;
+    const appToken = getRequiredTrimmedString(body, 'appToken');
+    const tableId = getRequiredTrimmedString(body, 'tableId');
 
     if (!appToken) {
       return NextResponse.json(
