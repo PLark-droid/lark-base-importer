@@ -96,6 +96,8 @@ interface LarkFieldListResponse {
       field_name: string;
       type: number;
     }>;
+    has_more?: boolean;
+    page_token?: string;
   };
 }
 
@@ -368,28 +370,40 @@ export async function getTableFields(
   const cleanAppToken = appToken.trim();
   const cleanTableId = tableId.trim();
 
-  const res = await fetch(
-    `${LARK_API_BASE}/bitable/v1/apps/${cleanAppToken}/tables/${cleanTableId}/fields`,
-    {
+  const allItems: Array<{ field_id: string; field_name: string; type: number }> = [];
+  let pageToken: string | undefined;
+
+  do {
+    const url = new URL(`${LARK_API_BASE}/bitable/v1/apps/${cleanAppToken}/tables/${cleanTableId}/fields`);
+    url.searchParams.set('page_size', '100');
+    if (pageToken) {
+      url.searchParams.set('page_token', pageToken);
+    }
+
+    const res = await fetch(url.toString(), {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${token}`,
       },
-    }
-  );
-
-  const data = await safeJsonParse<LarkFieldListResponse>(res, 'getTableFields');
-
-  if (data.code !== 0 || !data.data?.items) {
-    console.error('Failed to get fields:', {
-      code: data.code,
-      msg: data.msg,
-      httpStatus: res.status,
     });
-    throw new Error(`Failed to get table fields: ${data.msg} (code: ${data.code})`);
-  }
 
-  return data.data.items;
+    const data = await safeJsonParse<LarkFieldListResponse>(res, 'getTableFields');
+
+    if (data.code !== 0 || !data.data?.items) {
+      console.error('Failed to get fields:', {
+        code: data.code,
+        msg: data.msg,
+        httpStatus: res.status,
+      });
+      throw new Error(`Failed to get table fields: ${data.msg} (code: ${data.code})`);
+    }
+
+    allItems.push(...data.data.items);
+    pageToken = data.data.has_more ? data.data.page_token : undefined;
+  } while (pageToken);
+
+  console.log(`Fetched ${allItems.length} fields from table`);
+  return allItems;
 }
 
 /**
